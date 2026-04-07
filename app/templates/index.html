@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Examable UI</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Examable</h1>
+      <p class="muted">Upload PDF, processing, controllo qualita' ed estrazioni.</p>
+
+      <section class="card">
+        <h2>1) Upload PDF</h2>
+        <form id="upload-form">
+          <input id="pdf-file" type="file" accept="application/pdf" required />
+          <button type="submit">Carica</button>
+        </form>
+        <div id="upload-result" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>2) Processa Documento</h2>
+        <div class="row">
+          <input id="doc-id" type="text" placeholder="document_id" />
+          <button id="process-btn">Processa</button>
+        </div>
+        <div id="process-result" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>3) Documenti</h2>
+        <div class="row">
+          <button id="refresh-docs">Aggiorna lista</button>
+        </div>
+        <div id="documents" class="table-wrap"></div>
+      </section>
+
+      <section class="card">
+        <h2>4) Domande estratte</h2>
+        <div id="questions"></div>
+      </section>
+
+      <section class="card">
+        <h2>5) Report simulazione</h2>
+        <button id="load-sim-report">Carica report</button>
+        <pre id="sim-report" class="pre"></pre>
+      </section>
+
+      <section class="card">
+        <h2>6) Allenamento</h2>
+        <div class="row">
+          <select id="study-filter-document-id">
+            <option value="">Tutti i documenti</option>
+          </select>
+          <input id="study-filter-tag" type="text" placeholder="Filtro tag/slug/id (opzionale)" />
+          <button id="apply-study-filters">Applica filtri</button>
+        </div>
+        <div class="row">
+          <button id="next-study-question">Prossima domanda</button>
+          <span id="study-status" class="muted small"></span>
+        </div>
+        <div class="row">
+          <span id="study-counter" class="pill counter">Sessione: 0 corrette / 0 sbagliate</span>
+          <button id="reset-study-counter">Reset contatore</button>
+        </div>
+        <div id="study-question" class="study-box"></div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

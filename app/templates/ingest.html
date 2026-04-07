@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Examable - Ingest</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">Examable</div>
+        <nav class="topnav">
+          <a class="nav-link" href="/study">Allenamento</a>
+          <a class="nav-link active" href="/ingest">Ingest</a>
+          <a class="nav-link" href="/docs" target="_blank" rel="noopener noreferrer">API Docs</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="container page">
+      <section class="hero">
+        <h1>Ingest documenti</h1>
+        <p class="muted">
+          Carica PDF, avvia il processamento e controlla rapidamente estrazioni e qualita'.
+        </p>
+      </section>
+
+      <section class="kpi-grid">
+        <article class="kpi-card">
+          <div class="kpi-label">Documenti totali</div>
+          <div id="kpi-total-docs" class="kpi-value">-</div>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-label">Documenti processati</div>
+          <div id="kpi-processed-docs" class="kpi-value">-</div>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-label">Qualita' media</div>
+          <div id="kpi-avg-quality" class="kpi-value">-</div>
+        </article>
+      </section>
+
+      <section class="card">
+        <h2>Upload PDF</h2>
+        <form id="upload-form" class="row">
+          <input id="pdf-file" type="file" accept="application/pdf" required />
+          <button type="submit">Carica</button>
+        </form>
+        <div id="upload-result" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>Processa documento</h2>
+        <div class="row">
+          <input id="doc-id" type="text" placeholder="document_id" />
+          <button id="process-btn">Processa</button>
+        </div>
+        <div id="process-result" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>Documenti</h2>
+        <div class="row">
+          <button id="refresh-docs">Aggiorna lista</button>
+        </div>
+        <div id="documents" class="table-wrap"></div>
+      </section>
+
+      <section class="card">
+        <h2>Tagging</h2>
+        <div class="row">
+          <input id="tagging-doc-id" type="text" placeholder="document_id (opzionale: usa quello selezionato)" />
+          <label class="row" for="tagging-use-ai">
+            <input id="tagging-use-ai" type="checkbox" />
+            <span>Usa AI (opzionale)</span>
+          </label>
+          <button id="recompute-tags">Ricalcola tag documento</button>
+        </div>
+        <div id="tagging-result" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>Domande estratte</h2>
+        <div class="row">
+          <input id="questions-search" type="text" placeholder="Cerca nel testo domanda, opzioni o sottopunti..." />
+          <select id="questions-type-filter">
+            <option value="">Tutti i tipi</option>
+            <option value="multiple_choice">Scelta multipla</option>
+            <option value="open_text">Risposta aperta</option>
+            <option value="multi_part_open">Multi-parte aperta</option>
+          </select>
+          <button id="reload-questions">Aggiorna domande</button>
+        </div>
+        <p class="muted small">Ricerca live attiva mentre scrivi.</p>
+        <div id="questions"></div>
+      </section>
+
+      <section class="card">
+        <h2>Report simulazione</h2>
+        <button id="load-sim-report">Carica report</button>
+        <pre id="sim-report" class="pre"></pre>
+      </section>
+    </main>
+
+    <script src="/static/ingest.js"></script>
+  </body>
+</html>

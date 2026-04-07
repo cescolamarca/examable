@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Examable - Allenamento</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">Examable</div>
+        <nav class="topnav">
+          <a class="nav-link active" href="/study">Allenamento</a>
+          <a class="nav-link" href="/ingest">Ingest</a>
+          <a class="nav-link" href="/docs" target="_blank" rel="noopener noreferrer">API Docs</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="container page">
+      <section class="card">
+        <h2>Allenamento</h2>
+        <div class="filters-grid">
+          <div>
+            <label for="study-filter-document-id">Documento</label>
+            <select id="study-filter-document-id">
+              <option value="">Tutti i documenti</option>
+            </select>
+          </div>
+          <div>
+            <label for="study-filter-tag">Tag</label>
+            <input id="study-filter-tag" type="text" placeholder="es. reti, tcp-ip, routing" />
+          </div>
+          <div>
+            <label for="study-filter-tag-preset">Preset tag</label>
+            <select id="study-filter-tag-preset">
+              <option value="">Nessun preset</option>
+            </select>
+          </div>
+          <div>
+            <label for="study-filter-question-type">Tipo domanda</label>
+            <select id="study-filter-question-type">
+              <option value="">Tutti i tipi</option>
+              <option value="multiple_choice">Scelta multipla</option>
+              <option value="open_text">Risposta aperta</option>
+              <option value="multi_part_open">Multi-parte aperta</option>
+            </select>
+          </div>
+          <div>
+            <label for="study-filter-review-mode">Modalita'</label>
+            <select id="study-filter-review-mode">
+              <option value="all">Tutte</option>
+              <option value="unreviewed" selected>Senza correzione</option>
+              <option value="with_correction">Con correzione</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <button id="apply-study-filters">Applica filtri</button>
+          <button id="refresh-review-stats" class="secondary">Aggiorna stato review</button>
+          <span id="study-status" class="muted small"></span>
+        </div>
+        <div class="review-kpi-grid">
+          <div class="review-kpi">
+            <div class="review-kpi-label">Totali</div>
+            <div id="review-kpi-total" class="review-kpi-value">0</div>
+          </div>
+          <div class="review-kpi">
+            <div class="review-kpi-label">Da validare</div>
+            <div id="review-kpi-unreviewed" class="review-kpi-value">0</div>
+          </div>
+          <div class="review-kpi">
+            <div class="review-kpi-label">Con risposta corretta</div>
+            <div id="review-kpi-correct" class="review-kpi-value">0</div>
+          </div>
+          <div class="review-kpi">
+            <div class="review-kpi-label">Con spiegazione</div>
+            <div id="review-kpi-wrong" class="review-kpi-value">0</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Revisione banca</h2>
+        <div class="row">
+          <button id="prev-study-question" class="secondary">Precedente</button>
+          <button id="next-study-question">Prossima domanda</button>
+          <button type="button" id="toggle-shuffle-new" class="secondary" aria-pressed="false" title="Ordine casuale tra le domande ancora nuove (senza scheduling)">
+            Mischia nuove: off
+          </button>
+          <span id="study-counter" class="pill counter">Sessione: 0 corrette / 0 sbagliate</span>
+          <button id="reset-study-counter" class="secondary">Reset contatore</button>
+        </div>
+        <div id="study-question" class="study-box"></div>
+      </section>
+
+      <section class="card">
+        <h2>Simulazione Custom Esame</h2>
+        <div class="filters-grid">
+          <div>
+            <label for="sim-mcq-count">Numero scelta multipla</label>
+            <input id="sim-mcq-count" type="text" value="10" />
+          </div>
+          <div>
+            <label for="sim-open-count">Numero aperte</label>
+            <input id="sim-open-count" type="text" value="5" />
+          </div>
+          <div>
+            <label for="sim-multi-count">Numero multi-parte</label>
+            <input id="sim-multi-count" type="text" value="0" />
+          </div>
+          <div>
+            <label for="sim-tag">Tag (opzionale)</label>
+            <input id="sim-tag" type="text" placeholder="es. reti, tcp-ip" />
+          </div>
+          <div>
+            <label for="sim-tag-preset">Preset tag (opzionale)</label>
+            <select id="sim-tag-preset">
+              <option value="">Nessun preset</option>
+            </select>
+          </div>
+          <div>
+            <label for="sim-document-id">Documento (opzionale)</label>
+            <select id="sim-document-id">
+              <option value="">Tutti i documenti</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <button id="generate-simulation">Genera simulazione</button>
+          <label class="inline-check">
+            <input id="sim-only-reviewed-correct" type="checkbox" checked />
+            <span>Usa solo domande marcate corrette</span>
+          </label>
+          <span id="simulation-status" class="muted small"></span>
+        </div>
+        <div class="row simulation-nav">
+          <button id="simulation-prev" class="secondary">Precedente</button>
+          <button id="simulation-next" class="secondary">Successiva</button>
+          <span id="simulation-progress" class="muted small"></span>
+        </div>
+        <div id="simulation-question" class="study-box"></div>
+      </section>
+    </main>
+
+    <script src="/static/study.js"></script>
+  </body>
+</html>
