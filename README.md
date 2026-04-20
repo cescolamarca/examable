@@ -71,12 +71,11 @@ python scripts/parse_unisa_reti.py "C:\path\esame.pdf" --out parsed.json
 
 ## Note
 
-- Il parser è ottimizzato per layout simili ai due PDF UNISA condivisi.
 - Per PDF molto diversi è consigliato aggiungere fallback OCR + estrazione LLM guidata da schema JSON.
 - Su Windows con ambienti Python MSYS/MinGW alcune dipendenze API possono richiedere toolchain C/Rust; in quel caso usa `docker compose up` per partire senza setup locale.
 - La pipeline di estrazione testo prova in ordine: `pypdf` -> `pdfminer` -> OCR (`pdftoppm+tesseract`, se installati nel sistema).
 - L'endpoint `/documents/{document_id}/process` restituisce anche metodo usato, quality score e warning di estrazione.
-- In caso di estrazione debole, il sistema puo' fare un secondo passaggio multimodale (provider OpenAI-compatible) con merge automatico sui campi mancanti.
+- In caso di estrazione particolarmente debole, il sistema puo' fare un secondo passaggio multimodale (provider OpenAI-compatible) con merge automatico sui campi mancanti.
 
 ## Configurazione multimodale (opzionale)
 
