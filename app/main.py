@@ -7,13 +7,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 
 from app.config import settings
+from app.correction_generation import (
+    count_pending_candidates,
+    mark_orphan_running_as_interrupted,
+    schedule_job,
+    serialize_job,
+)
 from app.database import engine, healthcheck
 from app.maintenance import ensure_runtime_schema, run_cleanup_dedupe
 from app.multimodal import enhance_with_multimodal
@@ -21,6 +27,9 @@ from app.parser import compute_sha256, extract_text_pages_with_fallback, parse_u
 from app.scheduler import next_due_after_attempt
 from app.schemas import (
     AttemptIn,
+    CorrectionJobFailureOut,
+    CorrectionJobOut,
+    CorrectionJobStartIn,
     CustomSimulationIn,
     NextQuestionResponse,
     ParseResponse,
@@ -44,6 +53,9 @@ def _startup_migrations() -> None:
         ensure_base_tags(conn)
         ensure_module_1_preset(conn)
         ensure_intercorso_1_preset(conn)
+    # Any "queued"/"running" rows can only be from a previous process — mark them so the
+    # partial unique index allows new jobs immediately.
+    mark_orphan_running_as_interrupted()
 
 
 def _uploads_root() -> Path:
@@ -820,6 +832,257 @@ def set_question_correction(question_id: UUID, payload: QuestionCorrectionSetIn)
     }
 
 
+def _fetch_correction_job(conn, job_id: str) -> dict | None:
+    row = conn.execute(
+        text(
+            """
+            SELECT id, user_id, mode, document_id, status, total_questions,
+                   processed_count, succeeded_count, failed_count, skipped_count,
+                   current_question_id, cancel_requested, model, batch_size,
+                   error_message, started_at, finished_at, created_at
+            FROM correction_jobs
+            WHERE id = :id
+            """
+        ),
+        {"id": job_id},
+    ).mappings().first()
+    if not row:
+        return None
+    return serialize_job(dict(row))
+
+
+@app.post("/corrections/jobs", response_model=CorrectionJobOut)
+async def start_correction_job(payload: CorrectionJobStartIn) -> CorrectionJobOut:
+    mode = payload.mode
+    document_id = str(payload.document_id) if payload.document_id else None
+    if mode == "document" and not document_id:
+        raise HTTPException(status_code=400, detail="document_id required when mode='document'")
+    if mode == "frequency" and document_id:
+        raise HTTPException(status_code=400, detail="document_id must be null when mode='frequency'")
+
+    if not settings.correction_gen_enabled:
+        raise HTTPException(status_code=400, detail="Correction generation is disabled (CORRECTION_GEN_ENABLED=false)")
+    if not settings.multimodal_api_key:
+        raise HTTPException(status_code=400, detail="Missing MULTIMODAL_API_KEY; set it in the environment")
+
+    user_id_str = str(payload.user_id)
+    cap = max(0, int(settings.correction_gen_max_questions_per_job or 0))
+    model = (settings.correction_gen_model or settings.multimodal_model or "gpt-4.1-mini").strip()
+    batch_size = max(1, int(settings.correction_gen_batch_size or 5))
+
+    with engine.begin() as conn:
+        user_exists = conn.execute(
+            text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id_str}
+        ).first()
+        if not user_exists:
+            raise HTTPException(status_code=404, detail="user not found")
+        if document_id is not None:
+            doc_exists = conn.execute(
+                text("SELECT 1 FROM documents WHERE id = :id"), {"id": document_id}
+            ).first()
+            if not doc_exists:
+                raise HTTPException(status_code=404, detail="document not found")
+
+        total = count_pending_candidates(
+            conn, user_id=user_id_str, mode=mode, document_id=document_id, cap=cap
+        )
+        if total == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No pending questions to process (all already have a correction or none match)",
+            )
+
+        try:
+            inserted = conn.execute(
+                text(
+                    """
+                    INSERT INTO correction_jobs (
+                      user_id, mode, document_id, status, total_questions, model, batch_size
+                    )
+                    VALUES (
+                      :user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size
+                    )
+                    RETURNING id, user_id, mode, document_id, status, total_questions,
+                              processed_count, succeeded_count, failed_count, skipped_count,
+                              current_question_id, cancel_requested, model, batch_size,
+                              error_message, started_at, finished_at, created_at
+                    """
+                ),
+                {
+                    "user_id": user_id_str,
+                    "mode": mode,
+                    "document_id": document_id,
+                    "total": total,
+                    "model": model,
+                    "batch_size": batch_size,
+                },
+            ).mappings().first()
+        except Exception as exc:  # noqa: BLE001 — likely the partial unique index
+            existing = conn.execute(
+                text(
+                    "SELECT id FROM correction_jobs WHERE status IN ('queued','running') LIMIT 1"
+                )
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "another_job_running",
+                        "job_id": str(existing.id),
+                    },
+                ) from exc
+            raise HTTPException(status_code=500, detail=f"Failed to start job: {exc}") from exc
+
+    if not inserted:
+        raise HTTPException(status_code=500, detail="Job insert returned no row")
+
+    job_dict = serialize_job(dict(inserted))
+    schedule_job(job_dict["id"])
+    return CorrectionJobOut(**job_dict)
+
+
+@app.get("/corrections/jobs/current")
+def get_current_correction_job(response: Response) -> CorrectionJobOut | None:
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT id, user_id, mode, document_id, status, total_questions,
+                       processed_count, succeeded_count, failed_count, skipped_count,
+                       current_question_id, cancel_requested, model, batch_size,
+                       error_message, started_at, finished_at, created_at
+                FROM correction_jobs
+                WHERE status IN ('queued','running')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+    if not row:
+        response.status_code = 204
+        return None
+    return CorrectionJobOut(**serialize_job(dict(row)))
+
+
+@app.get("/corrections/jobs/recent")
+def list_recent_correction_jobs(limit: int = 20) -> list[CorrectionJobOut]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, user_id, mode, document_id, status, total_questions,
+                       processed_count, succeeded_count, failed_count, skipped_count,
+                       current_question_id, cancel_requested, model, batch_size,
+                       error_message, started_at, finished_at, created_at
+                FROM correction_jobs
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": max(1, min(limit, 100))},
+        ).mappings()
+        return [CorrectionJobOut(**serialize_job(dict(r))) for r in rows]
+
+
+@app.get("/corrections/jobs/{job_id}", response_model=CorrectionJobOut)
+def get_correction_job(job_id: UUID) -> CorrectionJobOut:
+    with engine.begin() as conn:
+        job = _fetch_correction_job(conn, str(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return CorrectionJobOut(**job)
+
+
+@app.post("/corrections/jobs/{job_id}/cancel", response_model=CorrectionJobOut)
+def cancel_correction_job(job_id: UUID) -> CorrectionJobOut:
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                UPDATE correction_jobs
+                SET cancel_requested = true
+                WHERE id = :id AND status IN ('queued','running')
+                RETURNING id, user_id, mode, document_id, status, total_questions,
+                          processed_count, succeeded_count, failed_count, skipped_count,
+                          current_question_id, cancel_requested, model, batch_size,
+                          error_message, started_at, finished_at, created_at
+                """
+            ),
+            {"id": str(job_id)},
+        ).mappings().first()
+        if row:
+            return CorrectionJobOut(**serialize_job(dict(row)))
+        existing = _fetch_correction_job(conn, str(job_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="job not found")
+    # Already terminal — return current state without error so the UI can reconcile.
+    return CorrectionJobOut(**existing)
+
+
+@app.get("/corrections/jobs/{job_id}/failures")
+def get_correction_job_failures(job_id: UUID) -> list[CorrectionJobFailureOut]:
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT failures_json FROM correction_jobs WHERE id = :id"),
+            {"id": str(job_id)},
+        ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="job not found")
+    failures = row["failures_json"] if isinstance(row["failures_json"], list) else []
+    out: list[CorrectionJobFailureOut] = []
+    for f in failures:
+        if not isinstance(f, dict):
+            continue
+        qid = f.get("question_id")
+        try:
+            qid_uuid = UUID(str(qid))
+        except Exception:
+            continue
+        out.append(
+            CorrectionJobFailureOut(
+                question_id=qid_uuid,
+                error=str(f.get("error", ""))[:500],
+                stem_preview=str(f.get("stem_preview", ""))[:240],
+            )
+        )
+    return out
+
+
+@app.get("/corrections/coverage")
+def get_correction_coverage(user_id: UUID, document_id: UUID | None = None) -> dict:
+    params: dict[str, str] = {"user_id": str(user_id)}
+    where_extra = ""
+    if document_id is not None:
+        where_extra = " AND q.document_id = :document_id"
+        params["document_id"] = str(document_id)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"""
+                SELECT
+                  COUNT(*)::INTEGER AS total,
+                  COUNT(*) FILTER (
+                    WHERE qc.correct_option_id IS NOT NULL
+                       OR COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), NULL) IS NOT NULL
+                       OR qc.answer_payload <> '{{}}'::jsonb
+                  )::INTEGER AS with_correction
+                FROM questions q
+                LEFT JOIN question_corrections qc
+                  ON qc.question_id = q.id AND qc.user_id = :user_id
+                WHERE q.is_discarded = false {where_extra}
+                """
+            ),
+            params,
+        ).mappings().first()
+    total = int(row["total"] or 0) if row else 0
+    with_correction = int(row["with_correction"] or 0) if row else 0
+    return {
+        "total": total,
+        "with_correction": with_correction,
+        "without_correction": max(0, total - with_correction),
+    }
+
+
 @app.get("/reviews/stats/{user_id}")
 def get_review_stats(
     user_id: UUID,
@@ -902,8 +1165,141 @@ def get_review_stats(
     }
 
 
+def _create_exhaustive_simulation(payload, _random) -> dict:
+    """Return ALL questions matching the filters, shuffled with tag interleaving."""
+    clauses: list[str] = ["q.is_discarded = false"]
+    params: dict[str, str | int] = {}
+    if payload.document_id is not None:
+        clauses.append("q.document_id = :document_id")
+        params["document_id"] = str(payload.document_id)
+    tag_values = _parse_tag_values(payload.tag)
+    if tag_values:
+        tag_sql, tag_params = _question_has_any_tag_sql(param_prefix="tag_value", tag_values=tag_values)
+        if tag_sql:
+            clauses.append(tag_sql)
+            params.update(tag_params)
+    if payload.tag_preset and payload.tag_preset.strip():
+        clauses.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM question_tags qt2
+              JOIN tag_preset_tags ppt ON ppt.tag_id = qt2.tag_id
+              JOIN tag_presets tp ON tp.id = ppt.preset_id
+              WHERE qt2.question_id = q.id
+                AND (tp.slug = :tag_preset OR tp.name = :tag_preset OR CAST(tp.id AS TEXT) = :tag_preset)
+            )
+            """
+        )
+        params["tag_preset"] = payload.tag_preset.strip()
+    if payload.only_reviewed_correct:
+        if payload.user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="user_id is required when only_reviewed_correct is true",
+            )
+        clauses.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM question_corrections qc
+              WHERE qc.question_id = q.id
+                AND qc.user_id = :review_user_id
+                AND (
+                  qc.correct_option_id IS NOT NULL
+                  OR COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), NULL) IS NOT NULL
+                  OR qc.answer_payload <> '{}'::jsonb
+                )
+            )
+            """
+        )
+        params["review_user_id"] = str(payload.user_id)
+
+    where_sql = " AND ".join(clauses)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                  q.id, q.document_id, q.section, q.number_in_section, q.question_type, q.stem,
+                  q.options_json, q.subparts_json, q.solution_json, q.confidence, q.needs_review,
+                  (
+                    SELECT COALESCE(jsonb_agg(t.slug ORDER BY t.slug), '[]'::jsonb)
+                    FROM question_tags qt
+                    JOIN tags t ON t.id = qt.tag_id
+                    WHERE qt.question_id = q.id
+                  ) AS tags_json
+                FROM questions q
+                WHERE
+                """
+                + where_sql
+                + """
+                ORDER BY random()
+                """
+            ),
+            params,
+        ).mappings()
+        pool = list(rows)
+
+    # Tag-interleaved shuffle for balanced topic distribution.
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for row in pool:
+        tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
+        primary_tag = tag_list[0] if tag_list else "__untagged__"
+        buckets[primary_tag].append(row)
+    for bucket in buckets.values():
+        _random.shuffle(bucket)
+    results: list[dict] = []
+    bucket_keys = list(buckets.keys())
+    _random.shuffle(bucket_keys)
+    round_idx = 0
+    remaining = True
+    while remaining:
+        remaining = False
+        for key in bucket_keys:
+            bucket = buckets[key]
+            if round_idx < len(bucket):
+                results.append(bucket[round_idx])
+                remaining = True
+        round_idx += 1
+
+    questions_out = []
+    for row in results:
+        questions_out.append(
+            {
+                "id": row["id"],
+                "document_id": row["document_id"],
+                "section": row["section"],
+                "number_in_section": row["number_in_section"],
+                "question_type": row["question_type"],
+                "stem": row["stem"],
+                "options": row["options_json"] or [],
+                "subparts": row["subparts_json"] or [],
+                "solution": row["solution_json"] or {},
+                "confidence": float(row["confidence"]),
+                "needs_review": bool(row["needs_review"]),
+                "tags": row["tags_json"] or [],
+            }
+        )
+
+    return {
+        "requested_total": len(questions_out),
+        "generated_total": len(questions_out),
+        "requested_by_type": {},
+        "shortage_by_type": {},
+        "exhaustive": True,
+        "questions": questions_out,
+    }
+
+
 @app.post("/simulations/custom")
 def create_custom_simulation(payload: CustomSimulationIn) -> dict:
+    import random as _random
+
+    # ---------- exhaustive mode ----------
+    if payload.exhaustive:
+        return _create_exhaustive_simulation(payload, _random)
+
     requested_by_type = {
         "multiple_choice": payload.multiple_choice_count,
         "open_text": payload.open_text_count,
@@ -920,7 +1316,7 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
             if wanted <= 0:
                 continue
             clauses = ["q.question_type = :question_type", "q.is_discarded = false"]
-            params: dict[str, str | int] = {"question_type": q_type, "limit": wanted}
+            params: dict[str, str | int] = {"question_type": q_type}
             if payload.document_id is not None:
                 clauses.append("q.document_id = :document_id")
                 params["document_id"] = str(payload.document_id)
@@ -968,7 +1364,12 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
                 params["review_user_id"] = str(payload.user_id)
 
             where_sql = " AND ".join(clauses)
-            rows = conn.execute(
+
+            # ---------- tag-distributed sampling ----------
+            # Fetch all eligible questions with their first tag for bucketing.
+            pool_limit = max(wanted * 6, 600)
+            params["pool_limit"] = pool_limit
+            pool_rows = conn.execute(
                 text(
                     """
                     SELECT
@@ -986,15 +1387,47 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
                     + where_sql
                     + """
                     ORDER BY random()
-                    LIMIT :limit
+                    LIMIT :pool_limit
                     """
                 ),
                 params,
             ).mappings()
-            items = list(rows)
-            if len(items) < wanted:
-                shortage[q_type] = wanted - len(items)
-            for row in items:
+            pool = list(pool_rows)
+
+            if len(pool) <= wanted:
+                # Not enough questions — just take them all.
+                selected = pool
+            else:
+                # Bucket by primary tag for equal coverage across topics.
+                buckets: dict[str, list[dict]] = defaultdict(list)
+                for row in pool:
+                    tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
+                    primary_tag = tag_list[0] if tag_list else "__untagged__"
+                    buckets[primary_tag].append(row)
+                # Shuffle within each bucket.
+                for bucket in buckets.values():
+                    _random.shuffle(bucket)
+                # Round-robin pick from buckets until we have enough.
+                selected: list[dict] = []
+                bucket_keys = list(buckets.keys())
+                _random.shuffle(bucket_keys)
+                round_idx = 0
+                while len(selected) < wanted:
+                    picked_this_round = False
+                    for key in bucket_keys:
+                        if len(selected) >= wanted:
+                            break
+                        bucket = buckets[key]
+                        if round_idx < len(bucket):
+                            selected.append(bucket[round_idx])
+                            picked_this_round = True
+                    round_idx += 1
+                    if not picked_this_round:
+                        break
+
+            if len(selected) < wanted:
+                shortage[q_type] = wanted - len(selected)
+            for row in selected:
                 results.append(
                     {
                         "id": row["id"],
@@ -1011,6 +1444,9 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
                         "tags": row["tags_json"] or [],
                     }
                 )
+
+    # Shuffle the final list so question types are interleaved.
+    _random.shuffle(results)
 
     return {
         "requested_total": requested_total,

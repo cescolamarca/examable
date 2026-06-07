@@ -1,0 +1,18 @@
+app = "examable-3iqwtm"
+primary_region = "fra"
+
+[env]
+  UPLOAD_DIR = "/data/uploads"
+  REDIS_URL = "redis://localhost:6379/0"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[mounts]
+  source = "examable_data"
+  destination = "/data"

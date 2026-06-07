@@ -1,0 +1,17 @@
+.git
+.gitignore
+.cursor
+.venv*
+venv*
+__pycache__/
+*.pyc
+uploads/
+ingest_runs/
+simulation_runs/
+stitch_exports/
+*.json
+*.txt
+!requirements.txt
+*.log
+.env
+docker-compose.yml
