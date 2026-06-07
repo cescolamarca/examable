@@ -67,7 +67,7 @@ def count_pending_candidates(
           AND (qc.correct_option_id IS NULL)
           AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
           AND COALESCE(qc.answer_payload, '{}'::jsonb) = '{}'::jsonb
-          AND (:document_id IS NULL OR q.document_id = CAST(:document_id AS UUID))
+          AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
         """
     )
     n = conn.execute(sql, {"user_id": user_id, "document_id": document_id}).scalar_one()
@@ -92,7 +92,7 @@ def _fetch_batch(
           AND (qc.correct_option_id IS NULL)
           AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
           AND COALESCE(qc.answer_payload, '{{}}'::jsonb) = '{{}}'::jsonb
-          AND (:document_id IS NULL OR q.document_id = CAST(:document_id AS UUID))
+          AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
         ORDER BY {order_sql}
         LIMIT :batch_size
         """
