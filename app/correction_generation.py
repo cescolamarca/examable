@@ -403,10 +403,11 @@ async def run_correction_job(job_id: UUID | str) -> None:
                 results, tid_to_qid = await _call_correction_llm(batch)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Correction job %s: batch LLM call failed", job_id_str)
+                err_text = str(exc) or type(exc).__name__
                 failures = [
                     {
                         "question_id": q["id"],
-                        "error": f"LLM batch error: {exc}",
+                        "error": f"LLM batch error: {err_text}",
                         "stem_preview": (q["stem"] or "")[:180],
                     }
                     for q in batch

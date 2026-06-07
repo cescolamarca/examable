@@ -44,7 +44,7 @@ if BaseSettings is not None:
         correction_gen_enabled: bool = True
         correction_gen_model: str = ""
         correction_gen_batch_size: int = 5
-        correction_gen_timeout_seconds: float = 60.0
+        correction_gen_timeout_seconds: float = 300.0
         correction_gen_max_questions_per_job: int = 5000
 
 
@@ -68,7 +68,7 @@ else:
         correction_gen_enabled: bool = dot.get("CORRECTION_GEN_ENABLED", "true").lower() == "true"
         correction_gen_model: str = dot.get("CORRECTION_GEN_MODEL", "")
         correction_gen_batch_size: int = int(dot.get("CORRECTION_GEN_BATCH_SIZE", "5"))
-        correction_gen_timeout_seconds: float = float(dot.get("CORRECTION_GEN_TIMEOUT_SECONDS", "60.0"))
+        correction_gen_timeout_seconds: float = float(dot.get("CORRECTION_GEN_TIMEOUT_SECONDS", "300.0"))
         correction_gen_max_questions_per_job: int = int(dot.get("CORRECTION_GEN_MAX_QUESTIONS_PER_JOB", "5000"))
 
 
