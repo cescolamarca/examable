@@ -182,7 +182,7 @@ async function discardQuestion(questionId, discarded = true) {
 }
 
 function updateStudyCounter() {
-  el("study-counter").textContent = `Sessione: ${studySession.correct} corrette / ${studySession.wrong} sbagliate`;
+  el("study-counter").textContent = `${studySession.correct}✓  ${studySession.wrong}✗`;
 }
 
 function updateShuffleNewButton() {
@@ -190,7 +190,7 @@ function updateShuffleNewButton() {
   if (!btn) return;
   const on = studySession.shuffleNew;
   btn.setAttribute("aria-pressed", on ? "true" : "false");
-  btn.textContent = on ? "Mischia nuove: on" : "Mischia nuove: off";
+  btn.textContent = on ? "Mischia: on" : "Mischia: off";
   btn.classList.toggle("active", on);
 }
 
@@ -342,10 +342,6 @@ function renderStudyQuestion(q) {
     : hasUserCorrection
       ? ""
       : "<p class='muted'>Nessuna soluzione AI presente. Per le scelta multipla seleziona l'opzione corretta e salva (spiegazione facoltativa).</p>";
-  const mcqActions = isMultipleChoice
-    ? `<button id="study-submit-answer">Conferma risposta</button>
-       <button id="study-copy-question" class="secondary" type="button">Copia domanda</button>`
-    : "";
   const correctionLabel = correctionStatusLabel(currentCorrection);
   const currentExplanation = currentCorrection && currentCorrection.explanation_text
     ? String(currentCorrection.explanation_text)
@@ -354,30 +350,35 @@ function renderStudyQuestion(q) {
     <div class="question-header">
       <strong>${q.section} ${q.number_in_section}</strong>
       <span class="pill">${q.question_type}</span>
-      <span id="correction-status-pill" class="pill">${`Correzione: ${correctionLabel}`}</span>
+      ${tags ? tags : ""}
     </div>
     <div class="question-stem">${q.stem}</div>
-    ${tags ? `<div class="row">${tags}</div>` : ""}
     ${opts ? `<ul>${opts}</ul>` : ""}
     ${parts ? `<ul>${parts}</ul>` : ""}
-    <div class="row question-actions">
-      <button id="study-show-solution">Mostra soluzione</button>
-      ${mcqActions}
-      <button id="study-mark-correct" disabled>Risposta corretta</button>
-      <button id="study-mark-wrong" class="mark-wrong" disabled>Risposta sbagliata</button>
-      ${isMultipleChoice ? `<button id="correction-save-option" class="secondary">Salva opzione corretta</button>` : ""}
-      <button id="question-discard" class="mark-wrong">Scarta dal database</button>
+    <div class="question-primary-actions">
+      ${isMultipleChoice ? `<button id="study-submit-answer">Conferma risposta</button>` : ""}
+      <button id="study-show-solution">Mostra risposta</button>
+      <button id="study-mark-correct" class="mark-correct" disabled>Ho capito ✓</button>
+      <button id="study-mark-wrong" class="mark-wrong" disabled>Non ho capito ✗</button>
       <span id="study-answer-status" class="muted small"></span>
     </div>
-    <div class="row correction-save-row">
-      <textarea id="correction-explanation" class="explanation-input" rows="3" placeholder="${
-        isMultipleChoice
-          ? "Spiegazione facoltativa..."
-          : "Inserisci la correzione / spiegazione per questa domanda..."
-      }">${currentExplanation}</textarea>
-      <button type="button" id="correction-save" class="secondary">Salva correzione</button>
-    </div>
     <div id="study-solution" class="hidden">${userCorrectionMarkup}${solutionMarkup}</div>
+    <details class="correction-details">
+      <summary>Aggiungi / modifica correzione <span class="muted small">(${correctionLabel})</span></summary>
+      <div class="correction-body">
+        ${isMultipleChoice ? `<button id="correction-save-option" class="secondary">Salva opzione corretta</button>` : ""}
+        <textarea id="correction-explanation" class="explanation-input" rows="3" placeholder="${
+          isMultipleChoice
+            ? "Spiegazione facoltativa..."
+            : "Inserisci la correzione / spiegazione per questa domanda..."
+        }">${currentExplanation}</textarea>
+        <div class="row">
+          <button type="button" id="correction-save" class="secondary">Salva correzione</button>
+          ${isMultipleChoice ? `<button id="study-copy-question" class="btn-ghost" type="button">Copia domanda</button>` : ""}
+          <button id="question-discard" class="btn-ghost danger-ghost">Scarta dal database</button>
+        </div>
+      </div>
+    </details>
   `;
 
   el("study-show-solution").addEventListener("click", () => {

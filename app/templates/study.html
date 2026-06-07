@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Examable - Allenamento</title>
+    <title>Examable - Studio</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -11,186 +11,88 @@
       <div class="container topbar-inner">
         <div class="brand">Examable</div>
         <nav class="topnav">
-          <a class="nav-link active" href="/study">Allenamento</a>
-          <a class="nav-link" href="/ingest">Ingest</a>
-          <a class="nav-link" href="/docs" target="_blank" rel="noopener noreferrer">API Docs</a>
+          <a class="nav-link active" href="/study">Studio</a>
+          <a class="nav-link" href="/ingest">Gestione</a>
         </nav>
+        <div class="topbar-meta">
+          <span><span id="review-kpi-total" class="kpi-num">0</span> dom.</span>
+          <span><span id="review-kpi-unreviewed" class="kpi-warn">0</span> da fare</span>
+          <span id="review-kpi-correct" class="hidden">0</span>
+          <span id="review-kpi-wrong" class="hidden">0</span>
+        </div>
       </div>
     </header>
 
-    <main class="container page immersion-page">
-      <section class="hero">
-        <span class="hero-kicker">Full Immersion</span>
-        <h1>Allena memoria e velocità in una simulazione d'esame immersiva.</h1>
-        <p class="muted">
-          Configura i filtri, genera la sessione e rispondi in modalità focus con feedback immediato.
-        </p>
-      </section>
-
-      <section class="review-kpi-grid">
-        <div class="review-kpi">
-          <div class="review-kpi-label">Totali</div>
-          <div id="review-kpi-total" class="review-kpi-value">0</div>
-        </div>
-        <div class="review-kpi">
-          <div class="review-kpi-label">Da validare</div>
-          <div id="review-kpi-unreviewed" class="review-kpi-value">0</div>
-        </div>
-        <div class="review-kpi">
-          <div class="review-kpi-label">Con risposta corretta</div>
-          <div id="review-kpi-correct" class="review-kpi-value">0</div>
-        </div>
-        <div class="review-kpi">
-          <div class="review-kpi-label">Con spiegazione</div>
-          <div id="review-kpi-wrong" class="review-kpi-value">0</div>
-        </div>
-      </section>
-
+    <main class="container page">
       <div class="study-tabs">
-        <button id="tab-btn-prep" class="active" onclick="switchStudyTab('prep')">Preparazione e Revisione</button>
-        <button id="tab-btn-sim" onclick="switchStudyTab('sim')">Simulazione Immersiva</button>
-        <button id="tab-btn-wrong" onclick="switchStudyTab('wrong')" class="hidden">Revisione Errori <span id="wrong-count-badge" class="pill counter">0</span></button>
+        <button id="tab-btn-prep" class="active" onclick="switchStudyTab('prep')">Revisione</button>
+        <button id="tab-btn-sim" onclick="switchStudyTab('sim')">Simulazione</button>
+        <button id="tab-btn-wrong" onclick="switchStudyTab('wrong')" class="hidden">Errori <span id="wrong-count-badge" class="pill counter">0</span></button>
       </div>
 
+      <!-- TAB: Revisione -->
       <div id="tab-prep" class="tab-pane active">
-        <div class="stack-lg">
-          <section class="card collapsible-card is-open" data-collapse-card>
-            <div class="collapsible-head">
-              <span class="section-kicker">Filtro Intelligente</span>
-              <button type="button" class="collapse-toggle secondary" data-collapse-target="study-panel-filters" aria-expanded="true">
-                Comprimi
-              </button>
-            </div>
-            <h2>Set Allenamento</h2>
-            <div id="study-panel-filters" class="collapse-panel">
-              <div class="filters-grid">
-              <div>
-                <label for="study-filter-document-id">Documento</label>
-                <select id="study-filter-document-id">
-                  <option value="">Tutti i documenti</option>
-                </select>
-              </div>
-              <div>
-                <label for="study-filter-tag">Tag</label>
-                <input id="study-filter-tag" type="text" placeholder="es. reti, tcp-ip, routing" />
-              </div>
-              <div>
-                <label for="study-filter-tag-preset">Preset tag</label>
-                <select id="study-filter-tag-preset">
-                  <option value="">Nessun preset</option>
-                </select>
-              </div>
-              <div>
-                <label for="study-filter-question-type">Tipo domanda</label>
-                <select id="study-filter-question-type">
-                  <option value="">Tutti i tipi</option>
-                  <option value="multiple_choice">Scelta multipla</option>
-                  <option value="open_text">Risposta aperta</option>
-                  <option value="multi_part_open">Multi-parte aperta</option>
-                </select>
-              </div>
-              <div>
-                <label for="study-filter-review-mode">Modalità</label>
-                <select id="study-filter-review-mode">
-                  <option value="all">Tutte</option>
-                  <option value="unreviewed" selected>Senza correzione</option>
-                  <option value="with_correction">Con correzione</option>
-                </select>
-              </div>
-            </div>
-              <div class="row">
-                <button id="apply-study-filters">Applica filtri</button>
-                <button id="refresh-review-stats" class="secondary">Aggiorna stato review</button>
-                <span id="study-status" class="muted small"></span>
-              </div>
-            </div>
-          </section>
+        <div class="filter-bar">
+          <select id="study-filter-document-id">
+            <option value="">Tutti i documenti</option>
+          </select>
+          <select id="study-filter-tag-preset">
+            <option value="">Nessun preset</option>
+          </select>
+          <select id="study-filter-question-type">
+            <option value="">Tutti i tipi</option>
+            <option value="multiple_choice">Scelta multipla</option>
+            <option value="open_text">Risposta aperta</option>
+            <option value="multi_part_open">Multi-parte</option>
+          </select>
+          <select id="study-filter-review-mode">
+            <option value="all">Tutte</option>
+            <option value="unreviewed" selected>Senza correzione</option>
+            <option value="with_correction">Con correzione</option>
+          </select>
+          <input id="study-filter-tag" type="text" class="visually-hidden" placeholder="tag" />
+          <button id="apply-study-filters" class="btn-sm">Applica</button>
+          <button id="refresh-review-stats" class="btn-icon secondary" title="Aggiorna statistiche">↺</button>
+        </div>
+        <div class="filter-status-row">
+          <span id="study-status" class="muted small"></span>
+          <span id="study-counter" class="pill counter">0✓ / 0✗</span>
+          <button id="reset-study-counter" class="btn-ghost">Reset</button>
+          <button id="toggle-shuffle-new" class="btn-ghost" aria-pressed="false">Mischia: off</button>
+        </div>
 
-          <section class="card collapsible-card" data-collapse-card>
-            <div class="collapsible-head">
-              <span class="section-kicker">Generator</span>
-              <button type="button" class="collapse-toggle secondary" data-collapse-target="study-panel-generator" aria-expanded="false">
-                Apri
-              </button>
-            </div>
-            <h2>Configura simulazione</h2>
-            <div id="study-panel-generator" class="collapse-panel">
-              <div class="filters-grid">
-              <div>
-                <label for="sim-mcq-count">Numero scelta multipla</label>
-                <input id="sim-mcq-count" type="text" value="10" />
-              </div>
-              <div>
-                <label for="sim-open-count">Numero aperte</label>
-                <input id="sim-open-count" type="text" value="5" />
-              </div>
-              <div>
-                <label for="sim-multi-count">Numero multi-parte</label>
-                <input id="sim-multi-count" type="text" value="0" />
-              </div>
-              <div>
-                <label for="sim-tag">Tag (opzionale)</label>
-                <input id="sim-tag" type="text" placeholder="es. reti, tcp-ip" />
-              </div>
-              <div>
-                <label for="sim-tag-preset">Preset tag (opzionale)</label>
-                <select id="sim-tag-preset">
-                  <option value="">Nessun preset</option>
-                </select>
-              </div>
-              <div>
-                <label for="sim-document-id">Documento (opzionale)</label>
-                <select id="sim-document-id">
-                  <option value="">Tutti i documenti</option>
-                </select>
-              </div>
-            </div>
-              <div class="row">
-                <button id="generate-simulation">Genera simulazione</button>
-                <button id="generate-exhaustive" class="secondary">Esaustiva (tutte le domande)</button>
-                <label class="inline-check">
-                  <input id="sim-only-reviewed-correct" type="checkbox" checked />
-                  <span>Usa solo domande marcate corrette</span>
-                </label>
-              </div>
-              <div class="row">
-                <span id="simulation-status" class="muted small"></span>
-              </div>
-            </div>
-          </section>
+        <div id="study-question" class="study-box"></div>
 
-          <section class="card soft-white collapsible-card" data-collapse-card>
-            <div class="collapsible-head">
-              <span class="section-kicker">Question Bank Review</span>
-              <button type="button" class="collapse-toggle secondary" data-collapse-target="study-panel-review" aria-expanded="false">
-                Apri
-              </button>
-            </div>
-            <h2>Revisione banca classica</h2>
-            <div id="study-panel-review" class="collapse-panel">
-              <div class="row">
-              <button id="prev-study-question" class="secondary">Precedente</button>
-              <button id="next-study-question">Prossima domanda</button>
-              <button
-                type="button"
-                id="toggle-shuffle-new"
-                class="secondary"
-                aria-pressed="false"
-                title="Ordine casuale tra le domande ancora nuove (senza scheduling)"
-              >
-                Mischia nuove: off
-              </button>
-              <span id="study-counter" class="pill counter">Sessione: 0 corrette / 0 sbagliate</span>
-              <button id="reset-study-counter" class="secondary">Reset contatore</button>
-            </div>
-              <div class="progress-bloom" aria-hidden="true"><span></span></div>
-              <div id="study-question" class="study-box"></div>
-            </div>
-          </section>
+        <div class="nav-row">
+          <button id="prev-study-question" class="secondary">← Precedente</button>
+          <button id="next-study-question">Prossima →</button>
         </div>
       </div>
 
+      <!-- TAB: Simulazione -->
       <div id="tab-sim" class="tab-pane">
+        <div class="sim-config-bar">
+          <div class="sim-count-group">
+            <label>MC <input id="sim-mcq-count" type="number" value="10" min="0" max="200" /></label>
+            <label>Aperte <input id="sim-open-count" type="number" value="5" min="0" max="200" /></label>
+            <label>Multi <input id="sim-multi-count" type="number" value="0" min="0" max="200" /></label>
+          </div>
+          <select id="sim-document-id">
+            <option value="">Tutti i documenti</option>
+          </select>
+          <select id="sim-tag-preset">
+            <option value="">Nessun preset</option>
+          </select>
+          <input id="sim-tag" type="text" class="visually-hidden" placeholder="tag" />
+          <label class="inline-check">
+            <input id="sim-only-reviewed-correct" type="checkbox" checked />
+            <span>Solo corrette</span>
+          </label>
+          <button id="generate-simulation">Genera simulazione</button>
+          <button id="generate-exhaustive" class="secondary">Esaustiva</button>
+          <span id="simulation-status" class="muted small"></span>
+        </div>
+
         <section class="immersion-shell">
           <header class="immersion-topbar">
             <div class="immersion-brand">
@@ -222,7 +124,7 @@
                 <span class="immersion-option-letter">A</span>
                 <span class="immersion-option-body">
                   <strong>Pronto a iniziare</strong>
-                  <span>Premi "Genera simulazione" nel pannello di sinistra.</span>
+                  <span>Configura i parametri sopra e premi "Genera simulazione".</span>
                 </span>
               </button>
             </section>
@@ -250,6 +152,8 @@
           <div class="immersion-orb immersion-orb-right" aria-hidden="true"></div>
         </section>
       </div>
+
+      <!-- TAB: Errori -->
       <div id="tab-wrong" class="tab-pane">
         <section class="card soft-white">
           <span class="section-kicker">Revisione Errori</span>
