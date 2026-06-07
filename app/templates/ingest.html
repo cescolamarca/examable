@@ -20,9 +20,10 @@
 
     <main class="container page">
       <section class="hero">
-        <h1>Ingest documenti</h1>
+        <span class="hero-kicker">Caricamento</span>
+        <h1>Trasforma i PDF in un question bank pronto da usare.</h1>
         <p class="muted">
-          Carica PDF, avvia il processamento e controlla rapidamente estrazioni e qualita'.
+          Carica, processa e monitora rapidamente qualità e stato estrazione con una pipeline unica.
         </p>
       </section>
 
@@ -36,71 +37,106 @@
           <div id="kpi-processed-docs" class="kpi-value">-</div>
         </article>
         <article class="kpi-card">
-          <div class="kpi-label">Qualita' media</div>
+          <div class="kpi-label">Qualità media</div>
           <div id="kpi-avg-quality" class="kpi-value">-</div>
         </article>
       </section>
 
-      <section class="card">
-        <h2>Upload PDF</h2>
-        <form id="upload-form" class="row">
-          <input id="pdf-file" type="file" accept="application/pdf" required />
-          <button type="submit">Carica</button>
-        </form>
-        <div id="upload-result" class="result"></div>
-      </section>
+      <div class="layout-columns">
+        <div class="stack-lg">
+          <section class="card soft-white">
+            <span class="section-kicker">Caricamento Rapido</span>
+            <h2>Carica File</h2>
+            <form id="upload-form" class="row">
+              <input id="pdf-file" type="file" accept="application/pdf" required />
+              <button type="submit">Carica</button>
+            </form>
+            <div id="upload-result" class="result"></div>
+          </section>
 
-      <section class="card">
-        <h2>Processa documento</h2>
-        <div class="row">
-          <input id="doc-id" type="text" placeholder="document_id" />
-          <button id="process-btn">Processa</button>
+          <section class="card">
+            <span class="section-kicker">Stato Elaborazione</span>
+            <h2>Pipeline documento</h2>
+            <div class="row">
+              <input id="doc-id" type="text" placeholder="document_id" />
+              <button id="process-btn">Processa</button>
+            </div>
+            <div id="process-result" class="result"></div>
+            <div class="progress-bloom" aria-hidden="true"><span></span></div>
+          </section>
+
+          <section class="card">
+            <span class="section-kicker">Documenti</span>
+            <h2>Documenti caricati</h2>
+            <div class="row">
+              <button id="refresh-docs">Aggiorna lista</button>
+            </div>
+            <div id="documents" class="table-wrap"></div>
+          </section>
+
+          <section class="card" id="ai-corrections-card">
+            <span class="section-kicker">Correzioni AI</span>
+            <h2>Genera risposte e spiegazioni</h2>
+            <p class="muted small" id="ai-gen-selected-hint">Seleziona un documento dalla tabella per generare per documento.</p>
+            <div class="row">
+              <button id="ai-gen-doc" disabled>Genera per documento</button>
+              <button id="ai-gen-freq">Genera per frequenza</button>
+              <button id="ai-gen-cancel" class="secondary" hidden>Annulla</button>
+            </div>
+            <p class="muted small">Salta automaticamente le domande gia' corrette manualmente.</p>
+            <div class="ai-gen-progress-track" hidden id="ai-gen-progress">
+              <div class="immersion-progress-fill" id="ai-gen-progress-fill"></div>
+            </div>
+            <div class="row" id="ai-gen-counters" hidden>
+              <span class="pill" id="ai-gen-done">0 / 0</span>
+              <span class="pill warn" id="ai-gen-failed" hidden>0 errori</span>
+              <span class="muted small" id="ai-gen-status-text"></span>
+            </div>
+            <div id="ai-gen-failures" hidden></div>
+            <div id="ai-gen-result" class="result"></div>
+          </section>
+
+          <section class="card">
+            <span class="section-kicker">Auto Tag</span>
+            <h2>Tagging e classificazione</h2>
+            <div class="row">
+              <input id="tagging-doc-id" type="text" placeholder="document_id (opzionale: usa quello selezionato)" />
+              <label class="row" for="tagging-use-ai">
+                <input id="tagging-use-ai" type="checkbox" />
+                <span>Usa AI (opzionale)</span>
+              </label>
+              <button id="recompute-tags">Ricalcola tag documento</button>
+            </div>
+            <div id="tagging-result" class="result"></div>
+          </section>
         </div>
-        <div id="process-result" class="result"></div>
-      </section>
 
-      <section class="card">
-        <h2>Documenti</h2>
-        <div class="row">
-          <button id="refresh-docs">Aggiorna lista</button>
+        <div class="stack-lg">
+          <section class="card gradient-action">
+            <span class="section-kicker">Banca Domande</span>
+            <h2>Domande estratte</h2>
+            <div class="row">
+              <input id="questions-search" type="text" placeholder="Cerca nel testo domanda, opzioni o sottopunti..." />
+              <select id="questions-type-filter">
+                <option value="">Tutti i tipi</option>
+                <option value="multiple_choice">Scelta multipla</option>
+                <option value="open_text">Risposta aperta</option>
+                <option value="multi_part_open">Multi-parte aperta</option>
+              </select>
+              <button id="reload-questions">Aggiorna domande</button>
+            </div>
+            <p class="muted small">Ricerca live attiva mentre scrivi.</p>
+            <div id="questions"></div>
+          </section>
+
+          <section class="card soft-white">
+            <span class="section-kicker">Telemetria</span>
+            <h2>Report simulazione</h2>
+            <button id="load-sim-report">Carica report</button>
+            <pre id="sim-report" class="pre"></pre>
+          </section>
         </div>
-        <div id="documents" class="table-wrap"></div>
-      </section>
-
-      <section class="card">
-        <h2>Tagging</h2>
-        <div class="row">
-          <input id="tagging-doc-id" type="text" placeholder="document_id (opzionale: usa quello selezionato)" />
-          <label class="row" for="tagging-use-ai">
-            <input id="tagging-use-ai" type="checkbox" />
-            <span>Usa AI (opzionale)</span>
-          </label>
-          <button id="recompute-tags">Ricalcola tag documento</button>
-        </div>
-        <div id="tagging-result" class="result"></div>
-      </section>
-
-      <section class="card">
-        <h2>Domande estratte</h2>
-        <div class="row">
-          <input id="questions-search" type="text" placeholder="Cerca nel testo domanda, opzioni o sottopunti..." />
-          <select id="questions-type-filter">
-            <option value="">Tutti i tipi</option>
-            <option value="multiple_choice">Scelta multipla</option>
-            <option value="open_text">Risposta aperta</option>
-            <option value="multi_part_open">Multi-parte aperta</option>
-          </select>
-          <button id="reload-questions">Aggiorna domande</button>
-        </div>
-        <p class="muted small">Ricerca live attiva mentre scrivi.</p>
-        <div id="questions"></div>
-      </section>
-
-      <section class="card">
-        <h2>Report simulazione</h2>
-        <button id="load-sim-report">Carica report</button>
-        <pre id="sim-report" class="pre"></pre>
-      </section>
+      </div>
     </main>
 
     <script src="/static/ingest.js"></script>

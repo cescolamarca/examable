@@ -1,10 +1,16 @@
 const el = (id) => document.getElementById(id);
 let selectedDocumentId = "";
 let allQuestions = [];
+let userId = null;
+let currentJobId = null;
+let jobPollHandle = null;
 
 function setResult(target, value, isError = false) {
   target.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   target.classList.toggle("error", isError);
+  target.classList.toggle("result-error", isError);
+  target.setAttribute("role", isError ? "alert" : "status");
+  target.setAttribute("aria-live", "polite");
 }
 
 async function api(url, options = {}) {
@@ -86,12 +92,13 @@ function renderDocs(rows) {
         <td>${r.title || ""}</td>
         <td><span class="pill ${statusClass}">${r.ingestion_status}</span></td>
         <td>${r.pages ?? "-"}</td>
+        <td><span class="pill ai-badge" data-doc-badge="${r.id}">AI ...</span></td>
         <td><button data-doc="${r.id}" class="open-doc" ${disabled}>Apri domande</button></td>
       </tr>`;
     })
     .join("");
   wrap.innerHTML = `<table>
-    <thead><tr><th>ID</th><th>Titolo</th><th>Stato</th><th>Pagine</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>Titolo</th><th>Stato</th><th>Pagine</th><th>AI</th><th></th></tr></thead>
     <tbody>${body}</tbody>
   </table>`;
 
@@ -101,9 +108,36 @@ function renderDocs(rows) {
       if (!id) return;
       selectedDocumentId = id;
       el("doc-id").value = id;
+      updateGenDocButton();
       await loadQuestions();
     });
   });
+  updateAiCoverageBadges(rows);
+}
+
+async function updateAiCoverageBadges(rows) {
+  if (!userId || !rows || !rows.length) return;
+  const wrap = el("documents");
+  await Promise.all(
+    rows.map(async (r) => {
+      try {
+        const cov = await api(
+          `/corrections/coverage?user_id=${encodeURIComponent(userId)}&document_id=${encodeURIComponent(r.id)}`
+        );
+        const node = wrap.querySelector(`[data-doc-badge="${r.id}"]`);
+        if (node) {
+          node.textContent = `AI ${cov.with_correction}/${cov.total}`;
+          if (cov.total > 0 && cov.with_correction >= cov.total) {
+            node.classList.add("ok");
+          } else {
+            node.classList.remove("ok");
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    })
+  );
 }
 
 async function refreshDocuments() {
@@ -204,6 +238,7 @@ async function loadSimulationReport() {
       avg_extraction_quality: data.avg_extraction_quality
     };
     target.textContent = JSON.stringify(summary, null, 2);
+    target.classList.remove("error");
   } catch (err) {
     target.textContent = err.message;
     target.classList.add("error");
@@ -230,6 +265,207 @@ async function recomputeTags() {
   }
 }
 
+// ---------- AI correction generation ----------
+
+function updateGenDocButton() {
+  const btn = el("ai-gen-doc");
+  if (!btn) return;
+  const hint = el("ai-gen-selected-hint");
+  const jobRunning = currentJobId !== null;
+  if (jobRunning || !selectedDocumentId) {
+    btn.disabled = true;
+  } else {
+    btn.disabled = false;
+  }
+  if (hint) {
+    hint.textContent = selectedDocumentId
+      ? `Documento selezionato: ${selectedDocumentId}`
+      : "Seleziona un documento dalla tabella per generare per documento.";
+  }
+}
+
+function renderJobUi(job) {
+  const progress = el("ai-gen-progress");
+  const fill = el("ai-gen-progress-fill");
+  const counters = el("ai-gen-counters");
+  const done = el("ai-gen-done");
+  const failed = el("ai-gen-failed");
+  const statusText = el("ai-gen-status-text");
+  const cancelBtn = el("ai-gen-cancel");
+  const docBtn = el("ai-gen-doc");
+  const freqBtn = el("ai-gen-freq");
+  if (!job) {
+    progress.hidden = true;
+    counters.hidden = true;
+    cancelBtn.hidden = true;
+    docBtn.disabled = !selectedDocumentId;
+    freqBtn.disabled = false;
+    return;
+  }
+  const isActive = job.status === "queued" || job.status === "running";
+  progress.hidden = false;
+  counters.hidden = false;
+  const total = Math.max(1, job.total_questions || 1);
+  const pct = Math.min(100, Math.round((100 * (job.processed_count || 0)) / total));
+  fill.style.width = `${pct}%`;
+  done.textContent = `${job.processed_count || 0} / ${job.total_questions || 0}`;
+  if ((job.failed_count || 0) > 0) {
+    failed.hidden = false;
+    failed.textContent = `${job.failed_count} errori`;
+  } else {
+    failed.hidden = true;
+  }
+  const modeLabel = job.mode === "frequency" ? "frequenza" : "documento";
+  statusText.textContent = `${job.status} - modalita': ${modeLabel}${
+    job.model ? ` - modello: ${job.model}` : ""
+  }`;
+  cancelBtn.hidden = !isActive;
+  docBtn.disabled = isActive || !selectedDocumentId;
+  freqBtn.disabled = isActive;
+}
+
+async function renderFailures(jobId) {
+  const wrap = el("ai-gen-failures");
+  if (!wrap) return;
+  try {
+    const failures = await api(`/corrections/jobs/${jobId}/failures`);
+    if (!failures.length) {
+      wrap.hidden = true;
+      wrap.innerHTML = "";
+      return;
+    }
+    const rows = failures
+      .slice(0, 200)
+      .map(
+        (f) =>
+          `<li><code>${f.question_id}</code> - ${escapeHtml(f.error)}<br><span class="muted small">${escapeHtml(
+            f.stem_preview
+          )}</span></li>`
+      )
+      .join("");
+    wrap.innerHTML = `<details><summary>Errori (${failures.length})</summary><ul>${rows}</ul></details>`;
+    wrap.hidden = false;
+  } catch (err) {
+    wrap.hidden = false;
+    wrap.innerHTML = `<p class="error">Errori non recuperabili: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function stopPolling() {
+  if (jobPollHandle) {
+    clearInterval(jobPollHandle);
+    jobPollHandle = null;
+  }
+}
+
+async function pollJobOnce() {
+  if (!currentJobId) return;
+  try {
+    const job = await api(`/corrections/jobs/${currentJobId}`);
+    renderJobUi(job);
+    if (job.status !== "queued" && job.status !== "running") {
+      stopPolling();
+      const finishedJobId = currentJobId;
+      currentJobId = null;
+      updateGenDocButton();
+      await renderFailures(finishedJobId);
+      await refreshDocuments();
+      const out = el("ai-gen-result");
+      const msg =
+        job.status === "done"
+          ? `Completato: ${job.succeeded_count} risposte salvate, ${job.failed_count} errori.`
+          : `Stato finale: ${job.status}${job.error_message ? ` - ${job.error_message}` : ""}`;
+      setResult(out, msg, job.status === "error");
+    }
+  } catch (err) {
+    setResult(el("ai-gen-result"), err.message, true);
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  jobPollHandle = setInterval(pollJobOnce, 2000);
+}
+
+async function startCorrectionJob(mode) {
+  const out = el("ai-gen-result");
+  if (!userId) {
+    setResult(out, "Utente di default non disponibile", true);
+    return;
+  }
+  const body = { user_id: userId, mode };
+  if (mode === "document") {
+    if (!selectedDocumentId) {
+      setResult(out, "Seleziona un documento dalla tabella.", true);
+      return;
+    }
+    body.document_id = selectedDocumentId;
+  }
+  try {
+    setResult(out, "Avvio generazione...");
+    const job = await api("/corrections/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    currentJobId = job.id;
+    el("ai-gen-failures").hidden = true;
+    el("ai-gen-failures").innerHTML = "";
+    renderJobUi(job);
+    setResult(out, `Job avviato (${job.total_questions} domande in coda).`);
+    startPolling();
+    await pollJobOnce();
+  } catch (err) {
+    setResult(out, err.message, true);
+  }
+}
+
+async function cancelCorrectionJob() {
+  if (!currentJobId) return;
+  try {
+    await api(`/corrections/jobs/${currentJobId}/cancel`, { method: "POST" });
+    await pollJobOnce();
+  } catch (err) {
+    setResult(el("ai-gen-result"), err.message, true);
+  }
+}
+
+async function reattachToRunningJob() {
+  try {
+    const res = await fetch("/corrections/jobs/current");
+    if (res.status === 204) {
+      renderJobUi(null);
+      return;
+    }
+    if (!res.ok) return;
+    const job = await res.json();
+    if (job && job.id) {
+      currentJobId = job.id;
+      renderJobUi(job);
+      startPolling();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadDefaultUser() {
+  try {
+    const u = await api("/users/default");
+    userId = u.id;
+  } catch {
+    userId = null;
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   el("upload-form").addEventListener("submit", uploadFile);
   el("process-btn").addEventListener("click", processDocument);
@@ -239,6 +475,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   el("questions-type-filter").addEventListener("change", applyQuestionFilters);
   el("recompute-tags").addEventListener("click", recomputeTags);
   el("load-sim-report").addEventListener("click", loadSimulationReport);
+  el("ai-gen-doc").addEventListener("click", () => startCorrectionJob("document"));
+  el("ai-gen-freq").addEventListener("click", () => startCorrectionJob("frequency"));
+  el("ai-gen-cancel").addEventListener("click", cancelCorrectionJob);
+  await loadDefaultUser();
   await refreshDocuments();
   await loadKpis();
+  await reattachToRunningJob();
+  updateGenDocButton();
 });

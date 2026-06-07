@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -15,6 +16,12 @@ from app.database import engine
 
 def ensure_runtime_schema() -> None:
     with engine.begin() as conn:
+        has_documents = conn.execute(text("SELECT to_regclass('public.documents')")).scalar()
+        if has_documents is None:
+            schema_path = Path("sql/schema.sql")
+            if schema_path.exists():
+                conn.exec_driver_sql(schema_path.read_text(encoding="utf-8"))
+
         conn.execute(
             text(
                 """
@@ -199,6 +206,67 @@ def ensure_runtime_schema() -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS correction_jobs (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  mode VARCHAR(20) NOT NULL CHECK (mode IN ('document','frequency')),
+                  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+                  status VARCHAR(20) NOT NULL
+                    CHECK (status IN ('queued','running','done','cancelled','interrupted','error')),
+                  total_questions INTEGER NOT NULL DEFAULT 0,
+                  processed_count INTEGER NOT NULL DEFAULT 0,
+                  succeeded_count INTEGER NOT NULL DEFAULT 0,
+                  failed_count INTEGER NOT NULL DEFAULT 0,
+                  skipped_count INTEGER NOT NULL DEFAULT 0,
+                  current_question_id UUID,
+                  failures_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                  cancel_requested BOOLEAN NOT NULL DEFAULT false,
+                  model VARCHAR(100) NOT NULL,
+                  batch_size INTEGER NOT NULL DEFAULT 5,
+                  error_message TEXT,
+                  started_at TIMESTAMPTZ,
+                  finished_at TIMESTAMPTZ,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_correction_jobs_status
+                ON correction_jobs (status)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_correction_jobs_document
+                ON correction_jobs (document_id)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_correction_jobs_created
+                ON correction_jobs (created_at DESC)
+                """
+            )
+        )
+        # Partial unique index: at most one row in (queued|running) state.
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_correction_jobs_one_running
+                ON correction_jobs ((1)) WHERE status IN ('queued','running')
+                """
+            )
+        )
 
 
 def _clean_text(raw: str) -> str:
@@ -238,6 +306,54 @@ def _as_list(v: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _as_dict(v: Any) -> dict[str, Any]:
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str):
+        try:
+            x = json.loads(v)
+            return x if isinstance(x, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_option_id(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
+def _mc_correct_canonical(solution: Any, options: list[dict[str, str]]) -> str:
+    """Testo canonico della risposta corretta (indipendente dall'id opzione), allineato a study.js."""
+    sol = _as_dict(solution)
+    id_to_canon = {
+        _normalize_option_id(o["id"]): _canonical_option_text(o["text"])
+        for o in options
+        if str(o.get("id", "")).strip()
+    }
+    candidate_keys = (
+        "correct_option",
+        "correctOption",
+        "correct_answer",
+        "correctAnswer",
+        "answer",
+        "option",
+        "choice",
+        "label",
+    )
+    for key in candidate_keys:
+        if key not in sol or sol[key] is None:
+            continue
+        cid = _normalize_option_id(sol[key])
+        if cid and cid in id_to_canon:
+            return id_to_canon[cid]
+    co = sol.get("correct_options")
+    if isinstance(co, list) and co:
+        cid = _normalize_option_id(co[0])
+        if cid and cid in id_to_canon:
+            return id_to_canon[cid]
+    return ""
+
+
 def _clean_options(options: Any) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for opt in _as_list(options):
@@ -268,6 +384,8 @@ class QuestionRow:
     options: list[dict[str, str]]
     subparts: list[dict[str, str]]
     confidence: float
+    is_discarded: bool
+    solution: dict[str, Any]
 
     @property
     def fingerprint(self) -> str:
@@ -277,12 +395,14 @@ class QuestionRow:
         if self.question_type == "multiple_choice":
             opt_texts = sorted(_canonical_option_text(o["text"]) for o in self.options)
             options_part = "||".join(opt_texts)
+            correct_part = _mc_correct_canonical(self.solution, self.options)
         else:
             opts_sorted = sorted(self.options, key=lambda o: o["id"])
             options_part = "|".join(f"{o['id']}:{_canonical_option_text(o['text'])}" for o in opts_sorted)
+            correct_part = ""
         sub_sorted = sorted(self.subparts, key=lambda s: (s["id"], _canonical_text(s["prompt"])))
         subparts_part = "|".join(f"{s['id']}:{_canonical_text(s['prompt'])}" for s in sub_sorted)
-        payload = f"{self.question_type}##{stem_part}##{options_part}##{subparts_part}"
+        payload = f"{self.question_type}##{stem_part}##{options_part}##{subparts_part}##{correct_part}"
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
     @property
@@ -342,6 +462,56 @@ def _merge_references(conn: Any, old_id: str, new_id: str) -> None:
     )
     conn.execute(text("DELETE FROM question_occurrences WHERE question_id = :old_id"), {"old_id": old_id})
 
+    conn.execute(
+        text(
+            """
+            INSERT INTO question_reviews (user_id, question_id, status, first_seen_at, reviewed_at)
+            SELECT user_id, :new_id, status, first_seen_at, reviewed_at
+            FROM question_reviews
+            WHERE question_id = :old_id
+            ON CONFLICT (user_id, question_id)
+            DO UPDATE SET
+              status = CASE
+                WHEN question_reviews.status = 'correct' OR EXCLUDED.status = 'correct' THEN 'correct'
+                ELSE 'wrong'
+              END,
+              first_seen_at = LEAST(question_reviews.first_seen_at, EXCLUDED.first_seen_at),
+              reviewed_at = GREATEST(question_reviews.reviewed_at, EXCLUDED.reviewed_at)
+            """
+        ),
+        {"old_id": old_id, "new_id": new_id},
+    )
+    conn.execute(text("DELETE FROM question_reviews WHERE question_id = :old_id"), {"old_id": old_id})
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO question_corrections (
+              user_id, question_id, correct_option_id, explanation_text, answer_payload, first_seen_at, reviewed_at
+            )
+            SELECT
+              user_id, :new_id, correct_option_id, explanation_text, answer_payload, first_seen_at, reviewed_at
+            FROM question_corrections
+            WHERE question_id = :old_id
+            ON CONFLICT (user_id, question_id)
+            DO UPDATE SET
+              correct_option_id = COALESCE(question_corrections.correct_option_id, EXCLUDED.correct_option_id),
+              explanation_text = COALESCE(
+                NULLIF(BTRIM(question_corrections.explanation_text), ''),
+                EXCLUDED.explanation_text
+              ),
+              answer_payload = CASE
+                WHEN question_corrections.answer_payload = '{}'::jsonb THEN EXCLUDED.answer_payload
+                ELSE question_corrections.answer_payload
+              END,
+              first_seen_at = LEAST(question_corrections.first_seen_at, EXCLUDED.first_seen_at),
+              reviewed_at = GREATEST(question_corrections.reviewed_at, EXCLUDED.reviewed_at)
+            """
+        ),
+        {"old_id": old_id, "new_id": new_id},
+    )
+    conn.execute(text("DELETE FROM question_corrections WHERE question_id = :old_id"), {"old_id": old_id})
+
 
 def _refresh_occurrence_aggregates(conn: Any) -> None:
     conn.execute(
@@ -382,7 +552,13 @@ def run_cleanup_dedupe() -> dict[str, Any]:
         )
 
         rows = conn.execute(
-            text("SELECT id, question_type, stem, options_json, subparts_json, confidence FROM questions")
+            text(
+                """
+                SELECT id, question_type, stem, options_json, subparts_json, confidence,
+                       is_discarded, solution_json
+                FROM questions
+                """
+            )
         ).mappings()
 
         questions: list[QuestionRow] = []
@@ -395,6 +571,8 @@ def run_cleanup_dedupe() -> dict[str, Any]:
                     options=_clean_options(r["options_json"]),
                     subparts=_clean_subparts(r["subparts_json"]),
                     confidence=float(r["confidence"]),
+                    is_discarded=bool(r["is_discarded"]),
+                    solution=_as_dict(r["solution_json"]),
                 )
             )
 
@@ -430,7 +608,7 @@ def run_cleanup_dedupe() -> dict[str, Any]:
         top_occurrences: list[dict[str, Any]] = []
 
         for fp, vals in duplicates.items():
-            ordered = sorted(vals, key=lambda x: x.score, reverse=True)
+            ordered = sorted(vals, key=lambda x: (x.is_discarded, -x.score))
             keeper = ordered[0]
             top_occurrences.append(
                 {

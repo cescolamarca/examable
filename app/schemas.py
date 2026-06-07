@@ -85,6 +85,7 @@ class CustomSimulationIn(BaseModel):
     document_id: UUID | None = None
     user_id: UUID | None = None
     only_reviewed_correct: bool = False
+    exhaustive: bool = False
 
 
 class TagOut(BaseModel):
@@ -122,3 +123,36 @@ class QuestionCorrectionSetIn(BaseModel):
     correct_option_id: str | None = None
     explanation_text: str | None = None
     answer_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CorrectionJobStartIn(BaseModel):
+    user_id: UUID
+    mode: Literal["document", "frequency"]
+    document_id: UUID | None = None
+
+
+class CorrectionJobOut(BaseModel):
+    id: UUID
+    user_id: UUID
+    mode: Literal["document", "frequency"]
+    document_id: UUID | None = None
+    status: Literal["queued", "running", "done", "cancelled", "interrupted", "error"]
+    total_questions: int
+    processed_count: int
+    succeeded_count: int
+    failed_count: int
+    skipped_count: int
+    current_question_id: UUID | None = None
+    cancel_requested: bool
+    model: str
+    batch_size: int
+    error_message: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    created_at: str
+
+
+class CorrectionJobFailureOut(BaseModel):
+    question_id: UUID
+    error: str
+    stem_preview: str

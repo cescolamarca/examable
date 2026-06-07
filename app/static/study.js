@@ -14,6 +14,65 @@ const studySession = {
   shuffleNew: false
 };
 const customSimulation = { questions: [], index: 0 };
+const simulationCorrectionCache = new Map();
+const immersionSession = {
+  questions: [],
+  index: 0,
+  answered: false,
+  selectedOptionId: "",
+  correctCount: 0,
+  wrongCount: 0,
+  wrongQuestions: []
+};
+
+function setInlineStatus(target, message, isError = false) {
+  if (!target) return;
+  target.textContent = message;
+  target.classList.toggle("error", isError);
+  target.setAttribute("role", isError ? "alert" : "status");
+  target.setAttribute("aria-live", "polite");
+}
+
+function buildMcqCopyText(question) {
+  if (!question || question.question_type !== "multiple_choice") return "";
+  const stem = String(question.stem || "").trim();
+  const opts = Array.isArray(question.options) ? question.options : [];
+
+  const lines = [];
+  if (stem) lines.push(stem);
+  lines.push("");
+
+  for (const o of opts) {
+    const id = String(o?.id ?? "").trim();
+    const text = String(o?.text ?? "").trim();
+    if (!id && !text) continue;
+    lines.push(`${id} ${text}`.trim());
+    lines.push("");
+  }
+
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "true");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  return ok;
+}
 
 function normalizeOptionId(value) {
   return String(value || "")
@@ -176,8 +235,7 @@ function showPreviousStudyQuestion() {
   currentCorrection = entry.correction || null;
   renderStudyQuestion(currentStudyQuestion);
   if (status) {
-    status.textContent = `Mostrata precedente (${studySession.historyIndex + 1}/${studySession.history.length})`;
-    status.classList.remove("error");
+    setInlineStatus(status, `Mostrata precedente (${studySession.historyIndex + 1}/${studySession.history.length})`);
   }
   updateStudyNavButtons();
 }
@@ -285,7 +343,8 @@ function renderStudyQuestion(q) {
       ? ""
       : "<p class='muted'>Nessuna soluzione AI presente. Per le scelta multipla seleziona l'opzione corretta e salva (spiegazione facoltativa).</p>";
   const mcqActions = isMultipleChoice
-    ? `<button id="study-submit-answer">Conferma risposta</button>`
+    ? `<button id="study-submit-answer">Conferma risposta</button>
+       <button id="study-copy-question" class="secondary" type="button">Copia domanda</button>`
     : "";
   const correctionLabel = correctionStatusLabel(currentCorrection);
   const currentExplanation = currentCorrection && currentCorrection.explanation_text
@@ -342,6 +401,21 @@ function renderStudyQuestion(q) {
       }
       const isCorrect = chosen === correctOptionId;
       await submitStudyAttempt(isCorrect, { selected_option: selected.value, auto_evaluated: true });
+    });
+
+    el("study-copy-question").addEventListener("click", async () => {
+      const status = el("study-answer-status");
+      try {
+        const text = buildMcqCopyText(q);
+        if (!text) {
+          setInlineStatus(status, "Niente da copiare per questa domanda.", true);
+          return;
+        }
+        await copyTextToClipboard(text);
+        setInlineStatus(status, "Copiato negli appunti.");
+      } catch (err) {
+        setInlineStatus(status, `Copia fallita: ${err?.message || err}`, true);
+      }
     });
   }
   el("study-mark-correct").addEventListener("click", async () => {
@@ -500,15 +574,14 @@ function applyStudyFilters() {
   if (studyFilters.reviewMode && studyFilters.reviewMode !== "all") {
     active.push(`review=${studyFilters.reviewMode}`);
   }
-  status.textContent = active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi";
-  status.classList.remove("error");
+  setInlineStatus(status, active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi");
   refreshReviewStats();
 }
 
 async function loadNextStudyQuestion(excludeCurrent = false, preferNew = false) {
   const status = el("study-status");
   try {
-    status.textContent = "Caricamento...";
+    setInlineStatus(status, "Caricamento...");
     const userId = await ensureDefaultUser();
     const excludeId = excludeCurrent && currentStudyQuestion ? currentStudyQuestion.id : "";
     const next = await api(buildStudyNextUrl(userId, excludeId, preferNew));
@@ -519,8 +592,7 @@ async function loadNextStudyQuestion(excludeCurrent = false, preferNew = false) 
     studySession.seenQuestionIds.add(String(q.id));
     pushStudyHistory(q, currentCorrection);
     renderStudyQuestion(q);
-    status.textContent = `Mostrata (${next.due_reason})`;
-    status.classList.remove("error");
+    setInlineStatus(status, `Mostrata (${next.due_reason})`);
   } catch (err) {
     if (excludeCurrent && (err.message || "").includes("No questions available")) {
       await loadNextStudyQuestion(false, preferNew);
@@ -542,14 +614,15 @@ async function loadNextStudyQuestion(excludeCurrent = false, preferNew = false) 
         applied.push(`preset=${preset ? preset.name : studyFilters.tagPreset}`);
       }
       if (studyFilters.questionType) applied.push(`tipo=${studyFilters.questionType}`);
-      status.textContent = applied.length
-        ? `Nessuna domanda trovata con i filtri correnti (${applied.join(" | ")}).`
-        : "Nessuna domanda disponibile.";
-      status.classList.remove("error");
+      setInlineStatus(
+        status,
+        applied.length
+          ? `Nessuna domanda trovata con i filtri correnti (${applied.join(" | ")}).`
+          : "Nessuna domanda disponibile."
+      );
       return;
     }
-    status.textContent = err.message;
-    status.classList.add("error");
+    setInlineStatus(status, err.message, true);
   }
 }
 
@@ -557,7 +630,7 @@ async function submitStudyAttempt(isCorrect, answerPayload = {}) {
   const status = el("study-answer-status");
   if (!currentStudyQuestion) return;
   try {
-    if (status) status.textContent = "Salvataggio...";
+    if (status) setInlineStatus(status, "Salvataggio...");
     const userId = await ensureDefaultUser();
     await api("/attempts", {
       method: "POST",
@@ -576,35 +649,336 @@ async function submitStudyAttempt(isCorrect, answerPayload = {}) {
     await loadNextStudyQuestion(false);
   } catch (err) {
     if (status) {
-      status.textContent = err.message;
-      status.classList.add("error");
+      setInlineStatus(status, err.message, true);
     }
   }
 }
 
-function renderSimulationQuestion() {
-  const box = el("simulation-question");
+async function submitImmersionAttempt(questionId, isCorrect, answerPayload = {}) {
+  const userId = await ensureDefaultUser();
+  await api("/attempts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: userId,
+      question_id: questionId,
+      is_correct: isCorrect,
+      grade: isCorrect ? 4 : 1,
+      answer_payload: answerPayload
+    })
+  });
+}
+
+async function getBestCorrectionOptionId(question) {
+  const fromSolution = extractCorrectOptionId(question?.solution || {});
+  if (fromSolution) return fromSolution;
+  if (!question?.id) return "";
+  if (simulationCorrectionCache.has(question.id)) {
+    return simulationCorrectionCache.get(question.id) || "";
+  }
+  try {
+    const correction = await loadQuestionCorrection(question.id);
+    const normalized = normalizeOptionId(correction?.correct_option_id || "");
+    simulationCorrectionCache.set(question.id, normalized || "");
+    return normalized || "";
+  } catch {
+    simulationCorrectionCache.set(question.id, "");
+    return "";
+  }
+}
+
+function renderImmersionBaseState() {
+  const tag = el("immersion-question-tag");
+  const title = el("immersion-question-text");
+  const optionsWrap = el("immersion-options");
+  const feedback = el("immersion-feedback");
   const progress = el("simulation-progress");
-  if (!customSimulation.questions.length) {
-    box.innerHTML = "<p class='muted'>Nessuna simulazione generata.</p>";
-    progress.textContent = "";
+  const progressText = el("immersion-progress-text");
+  const progressBar = el("immersion-progress-bar");
+  const score = el("immersion-score");
+  const sessionTitle = el("immersion-session-title");
+  if (!immersionSession.questions.length) {
+    if (tag) tag.textContent = "Simulazione";
+    if (title) title.textContent = "Genera una simulazione per iniziare la modalità full immersion.";
+    if (optionsWrap) {
+      optionsWrap.innerHTML = `
+        <button type="button" class="immersion-option" disabled>
+          <span class="immersion-option-letter">A</span>
+          <span class="immersion-option-body">
+            <strong>Sessione non avviata</strong>
+            <span>Configura i parametri e premi "Genera simulazione".</span>
+          </span>
+        </button>
+      `;
+    }
+    if (feedback) feedback.classList.add("hidden");
+    if (progress) progress.textContent = "";
+    if (progressText) progressText.textContent = "0/0";
+    if (progressBar) progressBar.style.width = "0%";
+    if (score) score.textContent = "Punteggio: 0 corrette / 0 sbagliate";
+    if (sessionTitle) sessionTitle.textContent = "Sessione immersiva";
+  }
+}
+
+async function handleImmersionOptionClick(optionId) {
+  if (!immersionSession.questions.length) return;
+  const q = immersionSession.questions[immersionSession.index];
+  if (!q || q.question_type !== "multiple_choice") return;
+
+  const isShowSolution = optionId === "";
+  if (immersionSession.answered && !isShowSolution) return;
+  
+  const previouslyAnswered = immersionSession.answered;
+  immersionSession.answered = true;
+  if (!previouslyAnswered) {
+    immersionSession.selectedOptionId = optionId;
+  }
+
+  const normalizedSelected = previouslyAnswered ? normalizeOptionId(immersionSession.selectedOptionId) : normalizeOptionId(optionId);
+  const correctOptionRaw = await getBestCorrectionOptionId(q);
+  const correctOption = correctOptionRaw ? normalizeOptionId(correctOptionRaw) : "";
+  const hasKnownCorrect = Boolean(correctOption);
+  const isCorrect = hasKnownCorrect && normalizedSelected === correctOption;
+
+  if (!previouslyAnswered) {
+    if (isCorrect) immersionSession.correctCount += 1;
+    else if (hasKnownCorrect) {
+      immersionSession.wrongCount += 1;
+      immersionSession.wrongQuestions.push({ question: q, selectedOption: optionId, correctOption: correctOption });
+    } else {
+      immersionSession.wrongQuestions.push({ question: q, selectedOption: optionId, correctOption: null });
+    }
+    updateWrongAnswersUI();
+  }
+
+  let explanation = "";
+  if (q.solution) {
+    explanation = q.solution.explanation || q.solution.comment || q.solution.reasoning || q.solution.spiegazione || "";
+  }
+  if (!explanation) {
+    try {
+      const correction = await loadQuestionCorrection(q.id);
+      if (correction && correction.explanation_text) {
+        explanation = correction.explanation_text;
+      }
+    } catch (e) {}
+  }
+
+  const feedback = el("immersion-feedback");
+  const feedbackTitle = el("immersion-feedback-title");
+  const feedbackBody = el("immersion-feedback-body");
+  if (feedback) {
+    feedback.classList.remove("hidden", "error");
+    if (!hasKnownCorrect || (!isCorrect && !isShowSolution) || (!previouslyAnswered && isShowSolution)) {
+      feedback.classList.add("error");
+    }
+  }
+  
+  const feedbackIcon = feedback ? feedback.querySelector(".immersion-feedback-icon") : null;
+  if (feedbackIcon) {
+    if (!previouslyAnswered && isShowSolution) feedbackIcon.textContent = "✗";
+    else feedbackIcon.textContent = isCorrect ? "✓" : "✗";
+  }
+  
+  if (feedbackTitle) {
+    if (!hasKnownCorrect) {
+      feedbackTitle.textContent = "Correzione non disponibile";
+    } else if ((!previouslyAnswered || !immersionSession.selectedOptionId) && isShowSolution) {
+      feedbackTitle.textContent = "Soluzione mostrata";
+    } else if (isCorrect) {
+      feedbackTitle.textContent = "Risposta corretta!";
+    } else {
+      feedbackTitle.textContent = "Risposta sbagliata";
+    }
+  }
+  
+  if (feedbackBody) {
+    let msg = "";
+    if (!hasKnownCorrect) {
+      msg = "Per questa domanda non è presente una correzione salvata. Salvala dalla revisione classica per abilitare l'autovalutazione.";
+    } else if ((!previouslyAnswered || !immersionSession.selectedOptionId) && isShowSolution) {
+      msg = `La risposta corretta è la ${correctOption.toUpperCase()}.`;
+    } else if (isCorrect) {
+      msg = "Ottimo! Continua con la prossima domanda mantenendo il ritmo.";
+    } else {
+      msg = `Risposta attesa: ${correctOption.toUpperCase()}. Rileggi il prompt e prova la successiva.`;
+    }
+    
+    if (explanation) {
+      msg += `\n\n📝 Spiegazione:\n${explanation}`;
+    }
+    
+    feedbackBody.textContent = msg;
+    feedbackBody.style.whiteSpace = "pre-wrap";
+  }
+
+  const optionButtons = Array.from(document.querySelectorAll(".immersion-option[data-option-id]"));
+  for (const btn of optionButtons) {
+    const id = normalizeOptionId(btn.getAttribute("data-option-id") || "");
+    btn.classList.add("is-locked");
+    if (normalizedSelected && id === normalizedSelected) btn.classList.add("is-selected");
+    if (hasKnownCorrect && id === correctOption) btn.classList.add("is-correct");
+    if (hasKnownCorrect && id === normalizedSelected && !isCorrect) btn.classList.add("is-wrong");
+  }
+
+  if (hasKnownCorrect && !previouslyAnswered) {
+    await submitImmersionAttempt(q.id, isCorrect, {
+      simulation_mode: "immersion",
+      selected_option: optionId,
+      selected_option_normalized: normalizedSelected,
+      auto_evaluated: true
+    });
+  }
+}
+
+function renderSimulationQuestion() {
+  const progress = el("simulation-progress");
+  const progressText = el("immersion-progress-text");
+  const progressBar = el("immersion-progress-bar");
+  const tag = el("immersion-question-tag");
+  const title = el("immersion-question-text");
+  const optionsWrap = el("immersion-options");
+  const score = el("immersion-score");
+  const sessionTitle = el("immersion-session-title");
+  const legacyBox = el("simulation-question");
+
+  if (!immersionSession.questions.length) {
+    renderImmersionBaseState();
+    if (legacyBox) legacyBox.innerHTML = "<p class='muted'>Nessuna simulazione generata.</p>";
     return;
   }
-  const q = customSimulation.questions[customSimulation.index];
-  const opts = (q.options || []).map((o) => `<li><strong>${o.id}</strong> ${o.text}</li>`).join("");
-  const parts = (q.subparts || []).map((s) => `<li>${s.id}) ${s.prompt}</li>`).join("");
-  const tags = (q.tags || []).map((t) => `<span class="pill">${t}</span>`).join(" ");
-  box.innerHTML = `
-    <div class="question-header">
-      <strong>${q.section} ${q.number_in_section}</strong>
-      <span class="pill">${q.question_type}</span>
-    </div>
-    <div class="question-stem">${q.stem}</div>
-    ${tags ? `<div class="row">${tags}</div>` : ""}
-    ${opts ? `<ul>${opts}</ul>` : ""}
-    ${parts ? `<ul>${parts}</ul>` : ""}
-  `;
-  progress.textContent = `Domanda ${customSimulation.index + 1} / ${customSimulation.questions.length}`;
+
+  const q = immersionSession.questions[immersionSession.index];
+  const total = immersionSession.questions.length;
+  const indexHuman = immersionSession.index + 1;
+  const ratio = total > 0 ? Math.round((indexHuman / total) * 100) : 0;
+  if (progress) progress.textContent = `Domanda ${indexHuman} / ${total}`;
+  if (progressText) progressText.textContent = `${indexHuman}/${total}`;
+  if (progressBar) progressBar.style.width = `${ratio}%`;
+  if (score) {
+    score.textContent = `Punteggio: ${immersionSession.correctCount} corrette / ${immersionSession.wrongCount} sbagliate`;
+  }
+  if (sessionTitle) sessionTitle.textContent = "Full Immersion Simulation";
+  if (tag) {
+    const tagList = Array.isArray(q.tags) ? q.tags : [];
+    const tagPills = tagList.length ? tagList.map(t => `<span class="pill">${t}</span>`).join(" ") : "";
+    tag.innerHTML = `${q.question_type} · ${q.section} ${q.number_in_section}${tagPills ? " " + tagPills : ""}`;
+  }
+  if (title) title.textContent = String(q.stem || "");
+
+  const feedback = el("immersion-feedback");
+  if (feedback) {
+    if (!immersionSession.answered) {
+      feedback.classList.remove("error");
+      feedback.classList.add("hidden");
+    }
+  }
+
+  if (q.question_type === "multiple_choice" && Array.isArray(q.options) && q.options.length) {
+    optionsWrap.innerHTML = q.options
+      .map((o) => {
+        const optionId = String(o?.id || "").trim();
+        const optionText = String(o?.text || "").trim();
+        const label = optionId || "?";
+        return `
+          <button type="button" class="immersion-option" data-option-id="${optionId}">
+            <span class="immersion-option-letter">${label}</span>
+            <span class="immersion-option-body">
+              <strong>${optionText || "Opzione"}</strong>
+              <span>${optionId ? `Scelta ${optionId}` : "Seleziona questa opzione"}</span>
+            </span>
+          </button>
+        `;
+      })
+      .join("") + `
+        <div style="grid-column: 1 / -1; margin-top: 6px;">
+          <button type="button" class="secondary" id="immersion-show-mcq-solution" style="width: 100%; justify-content: center;">
+            📖 Non lo so / Mostra soluzione
+          </button>
+        </div>
+      `;
+    Array.from(optionsWrap.querySelectorAll(".immersion-option[data-option-id]")).forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-option-id") || "";
+        await handleImmersionOptionClick(id);
+      });
+    });
+    const showSolutionBtn = el("immersion-show-mcq-solution");
+    if (showSolutionBtn) {
+      showSolutionBtn.addEventListener("click", async () => {
+        await handleImmersionOptionClick("");
+      });
+    }
+  } else {
+    const subparts = Array.isArray(q.subparts) ? q.subparts : [];
+    const subpartsMarkup = subparts.length
+      ? `<ul>${subparts.map((s) => `<li>${s.id || ""}) ${s.prompt || ""}</li>`).join("")}</ul>`
+      : "";
+    optionsWrap.innerHTML = `
+      <div class="immersion-option is-selected is-locked" role="group" aria-label="Domanda aperta">
+        <span class="immersion-option-letter">✎</span>
+        <span class="immersion-option-body">
+          <strong>Risposta aperta</strong>
+          <span>Rispondi mentalmente e poi controlla la correzione.</span>
+          ${subpartsMarkup}
+        </span>
+      </div>
+      <button type="button" class="immersion-option" id="immersion-show-correction">
+        <span class="immersion-option-letter">📖</span>
+        <span class="immersion-option-body">
+          <strong>Mostra correzione</strong>
+          <span>Fai clic per visualizzare la spiegazione e/o la risposta corretta.</span>
+        </span>
+      </button>
+    `;
+    const showBtn = el("immersion-show-correction");
+    if (showBtn) {
+      showBtn.addEventListener("click", async () => {
+        const feedbackEl = el("immersion-feedback");
+        const feedbackTitle = el("immersion-feedback-title");
+        const feedbackBody = el("immersion-feedback-body");
+        const feedbackIcon = feedbackEl ? feedbackEl.querySelector(".immersion-feedback-icon") : null;
+        try {
+          const correction = await loadQuestionCorrection(q.id);
+          if (feedbackEl) feedbackEl.classList.remove("hidden", "error");
+          if (feedbackIcon) feedbackIcon.textContent = "📖";
+          if (correction && correction.has_correction) {
+            const parts = [];
+            if (correction.correct_option_id) parts.push(`Opzione corretta: ${correction.correct_option_id}`);
+            if (correction.explanation_text) parts.push(correction.explanation_text);
+            if (feedbackTitle) feedbackTitle.textContent = "Correzione salvata";
+            if (feedbackBody) feedbackBody.textContent = parts.length ? parts.join(" — ") : "Presente ma senza dettagli.";
+          } else {
+            if (feedbackEl) feedbackEl.classList.add("error");
+            if (feedbackIcon) feedbackIcon.textContent = "✗";
+            if (feedbackTitle) feedbackTitle.textContent = "Nessuna correzione";
+            if (feedbackBody) feedbackBody.textContent = "Nessuna correzione salvata per questa domanda. Usa la revisione classica per inserirla.";
+          }
+        } catch {
+          if (feedbackEl) { feedbackEl.classList.remove("hidden"); feedbackEl.classList.add("error"); }
+          if (feedbackIcon) feedbackIcon.textContent = "✗";
+          if (feedbackTitle) feedbackTitle.textContent = "Errore";
+          if (feedbackBody) feedbackBody.textContent = "Impossibile caricare la correzione.";
+        }
+        showBtn.disabled = true;
+        showBtn.classList.add("is-locked");
+      });
+    }
+  }
+
+  if (legacyBox) {
+    const opts = (q.options || []).map((o) => `<li><strong>${o.id}</strong> ${o.text}</li>`).join("");
+    const parts = (q.subparts || []).map((s) => `<li>${s.id}) ${s.prompt}</li>`).join("");
+    legacyBox.innerHTML = `
+      <div class="question-header">
+        <strong>${q.section} ${q.number_in_section}</strong>
+        <span class="pill">${q.question_type}</span>
+      </div>
+      <div class="question-stem">${q.stem}</div>
+      ${opts ? `<ul>${opts}</ul>` : ""}
+      ${parts ? `<ul>${parts}</ul>` : ""}
+    `;
+  }
 }
 
 function readCountInput(id) {
@@ -633,12 +1007,10 @@ async function generateCustomSimulation() {
         payload.multi_part_open_count <=
       0
     ) {
-      status.textContent = "Inserisci almeno 1 domanda.";
-      status.classList.add("error");
+      setInlineStatus(status, "Inserisci almeno 1 domanda.", true);
       return;
     }
-    status.textContent = "Generazione simulazione...";
-    status.classList.remove("error");
+    setInlineStatus(status, "Generazione simulazione...");
     const result = await api("/simulations/custom", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -646,36 +1018,182 @@ async function generateCustomSimulation() {
     });
     customSimulation.questions = result.questions || [];
     customSimulation.index = 0;
+    immersionSession.questions = customSimulation.questions;
+    immersionSession.index = 0;
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+    immersionSession.correctCount = 0;
+    immersionSession.wrongCount = 0;
+    immersionSession.wrongQuestions = [];
+    simulationCorrectionCache.clear();
+    updateWrongAnswersUI();
+
     if (!customSimulation.questions.length) {
-      status.textContent = "Nessuna domanda disponibile con i filtri scelti.";
+      setInlineStatus(status, "Nessuna domanda disponibile con i filtri scelti.");
       renderSimulationQuestion();
       return;
     }
     const shortage = result.shortage_by_type || {};
     const shortageParts = Object.keys(shortage).map((k) => `${k}: -${shortage[k]}`);
-    status.textContent = shortageParts.length
-      ? `Generate ${result.generated_total} domande (disponibilita' ridotta: ${shortageParts.join(", ")}).`
-      : `Generate ${result.generated_total} domande.`;
+    setInlineStatus(
+      status,
+      shortageParts.length
+        ? `Generate ${result.generated_total} domande (disponibilità ridotta: ${shortageParts.join(", ")}).`
+        : `Generate ${result.generated_total} domande.`
+    );
     renderSimulationQuestion();
+    // Auto-switch to simulation tab
+    if (typeof switchStudyTab === "function") switchStudyTab("sim");
   } catch (err) {
-    status.textContent = err.message;
-    status.classList.add("error");
+    setInlineStatus(status, err.message, true);
   }
 }
 
+async function generateExhaustiveSimulation() {
+  const status = el("simulation-status");
+  try {
+    const userId = await ensureDefaultUser();
+    const payload = {
+      multiple_choice_count: 0,
+      open_text_count: 0,
+      multi_part_open_count: 0,
+      tag: el("sim-tag").value.trim() || null,
+      tag_preset: el("sim-tag-preset").value.trim() || null,
+      document_id: el("sim-document-id").value.trim() || null,
+      user_id: userId,
+      only_reviewed_correct: Boolean(el("sim-only-reviewed-correct")?.checked),
+      exhaustive: true
+    };
+    setInlineStatus(status, "Generazione simulazione esaustiva...");
+    const result = await api("/simulations/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    customSimulation.questions = result.questions || [];
+    customSimulation.index = 0;
+    immersionSession.questions = customSimulation.questions;
+    immersionSession.index = 0;
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+    immersionSession.correctCount = 0;
+    immersionSession.wrongCount = 0;
+    immersionSession.wrongQuestions = [];
+    simulationCorrectionCache.clear();
+    updateWrongAnswersUI();
+
+    if (!customSimulation.questions.length) {
+      setInlineStatus(status, "Nessuna domanda disponibile con i filtri scelti.");
+      renderSimulationQuestion();
+      return;
+    }
+    setInlineStatus(status, `Simulazione esaustiva: ${result.generated_total} domande caricate.`);
+    renderSimulationQuestion();
+    if (typeof switchStudyTab === "function") switchStudyTab("sim");
+  } catch (err) {
+    setInlineStatus(status, err.message, true);
+  }
+}
+
+function updateWrongAnswersUI() {
+  const wrongBtn = el("tab-btn-wrong");
+  const badge = el("wrong-count-badge");
+  const list = el("wrong-answers-list");
+  const emptyState = el("wrong-answers-empty");
+  const count = immersionSession.wrongQuestions.length;
+
+  if (wrongBtn) {
+    if (count > 0) wrongBtn.classList.remove("hidden");
+    else wrongBtn.classList.add("hidden");
+  }
+  if (badge) badge.textContent = String(count);
+  if (!list) return;
+
+  if (count === 0) {
+    list.innerHTML = "";
+    if (emptyState) emptyState.classList.remove("hidden");
+    return;
+  }
+  if (emptyState) emptyState.classList.add("hidden");
+
+  list.innerHTML = immersionSession.wrongQuestions.map((entry, idx) => {
+    const q = entry.question;
+    const tags = (q.tags || []).map(t => `<span class="pill">${t}</span>`).join(" ");
+    const correctLabel = entry.correctOption ? `Corretta: <strong>${entry.correctOption.toUpperCase()}</strong>` : "<em>Correzione non disponibile</em>";
+    const selectedLabel = entry.selectedOption ? `Selezionata: <strong>${entry.selectedOption.toUpperCase()}</strong>` : "";
+    const optionsList = (q.options || []).map(o => {
+      const normId = normalizeOptionId(o.id);
+      let cls = "";
+      if (entry.correctOption && normId === entry.correctOption) cls = "ok";
+      else if (entry.selectedOption && normId === normalizeOptionId(entry.selectedOption)) cls = "warn";
+      return `<div class="pill ${cls}"><strong>${o.id}</strong> ${o.text}</div>`;
+    }).join(" ");
+    return `
+      <div class="question-item reveal-item" style="animation-delay:${idx * 40}ms;">
+        <div class="question-header">
+          <strong>${q.section} ${q.number_in_section}</strong>
+          <span class="pill">${q.question_type}</span>
+          ${tags}
+        </div>
+        <div class="question-stem">${q.stem}</div>
+        <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;">${optionsList}</div>
+        <div style="margin-top:10px;" class="muted small">${selectedLabel}${selectedLabel && correctLabel ? " · " : ""}${correctLabel}</div>
+      </div>
+    `;
+  }).join("");
+}
+
 function simulationNext() {
-  if (!customSimulation.questions.length) return;
-  customSimulation.index = Math.min(customSimulation.index + 1, customSimulation.questions.length - 1);
+  if (!immersionSession.questions.length) return;
+  immersionSession.index = Math.min(immersionSession.index + 1, immersionSession.questions.length - 1);
+  customSimulation.index = immersionSession.index;
+  immersionSession.answered = false;
+  immersionSession.selectedOptionId = "";
   renderSimulationQuestion();
 }
 
 function simulationPrev() {
-  if (!customSimulation.questions.length) return;
-  customSimulation.index = Math.max(customSimulation.index - 1, 0);
+  if (!immersionSession.questions.length) return;
+  immersionSession.index = Math.max(immersionSession.index - 1, 0);
+  customSimulation.index = immersionSession.index;
+  immersionSession.answered = false;
+  immersionSession.selectedOptionId = "";
   renderSimulationQuestion();
 }
 
+function initStudyAccordion() {
+  const cards = Array.from(document.querySelectorAll("[data-collapse-card]"));
+  const toggles = Array.from(document.querySelectorAll(".collapse-toggle[data-collapse-target]"));
+  if (!cards.length || !toggles.length) return;
+
+  const setOpenCard = (targetId) => {
+    for (const card of cards) {
+      const toggle = card.querySelector(".collapse-toggle[data-collapse-target]");
+      const panel = toggle ? document.getElementById(toggle.getAttribute("data-collapse-target") || "") : null;
+      const open = Boolean(panel && panel.id === targetId);
+      card.classList.toggle("is-open", open);
+      if (toggle) {
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.textContent = open ? "Comprimi" : "Apri";
+      }
+    }
+  };
+
+  for (const toggle of toggles) {
+    toggle.addEventListener("click", () => {
+      const panelId = toggle.getAttribute("data-collapse-target") || "";
+      const isOpen = toggle.getAttribute("aria-expanded") === "true";
+      if (isOpen) {
+        // Keep one panel visible at all times: ignore collapse if already open.
+        return;
+      }
+      setOpenCard(panelId);
+    });
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
+  initStudyAccordion();
   el("apply-study-filters").addEventListener("click", applyStudyFilters);
   el("refresh-review-stats").addEventListener("click", refreshReviewStats);
   el("prev-study-question").addEventListener("click", showPreviousStudyQuestion);
@@ -696,6 +1214,26 @@ window.addEventListener("DOMContentLoaded", async () => {
     updateStudyNavButtons();
   });
   el("generate-simulation").addEventListener("click", generateCustomSimulation);
+  el("generate-exhaustive").addEventListener("click", generateExhaustiveSimulation);
+  el("immersion-next")?.addEventListener("click", simulationNext);
+  el("immersion-finish")?.addEventListener("click", () => {
+    if (immersionSession.wrongQuestions.length > 0) {
+      // Show review tab before clearing
+      updateWrongAnswersUI();
+      if (typeof switchStudyTab === "function") switchStudyTab("wrong");
+    }
+    immersionSession.questions = [];
+    immersionSession.index = 0;
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+    immersionSession.correctCount = 0;
+    immersionSession.wrongCount = 0;
+    // Keep wrongQuestions for review — only clear on new simulation
+    customSimulation.questions = [];
+    customSimulation.index = 0;
+    renderSimulationQuestion();
+    setInlineStatus(el("simulation-status"), "Sessione immersione chiusa.");
+  });
   el("simulation-next").addEventListener("click", simulationNext);
   el("simulation-prev").addEventListener("click", simulationPrev);
   await ensureDefaultUser();
