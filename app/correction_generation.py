@@ -176,9 +176,10 @@ async def _call_correction_llm(batch: list[dict]) -> tuple[dict[str, dict], dict
         raise RuntimeError("Missing MULTIMODAL_API_KEY")
 
     user_text, tid_to_qid = _build_user_content(batch)
+    # Note: GPT-5.x models reject temperature != 1, so we omit the field and let
+    # the model use its default. response_format keeps output deterministic enough.
     payload = {
         "model": _model_name(),
-        "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
