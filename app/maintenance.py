@@ -267,6 +267,48 @@ def ensure_runtime_schema() -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS simulations (
+                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  question_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                  requested_total INTEGER NOT NULL DEFAULT 0,
+                  generated_total INTEGER NOT NULL DEFAULT 0,
+                  exhaustive BOOLEAN NOT NULL DEFAULT false
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_simulations_user_created
+                ON simulations (user_id, created_at DESC)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'attempts'
+                  ) THEN
+                    ALTER TABLE attempts
+                    ADD COLUMN IF NOT EXISTS simulation_id UUID REFERENCES simulations(id) ON DELETE SET NULL;
+                  END IF;
+                END
+                $$;
+                """
+            )
+        )
 
 
 def _clean_text(raw: str) -> str:
@@ -318,42 +360,6 @@ def _as_dict(v: Any) -> dict[str, Any]:
     return {}
 
 
-def _normalize_option_id(raw: Any) -> str:
-    return str(raw or "").strip().lower()
-
-
-def _mc_correct_canonical(solution: Any, options: list[dict[str, str]]) -> str:
-    """Testo canonico della risposta corretta (indipendente dall'id opzione), allineato a study.js."""
-    sol = _as_dict(solution)
-    id_to_canon = {
-        _normalize_option_id(o["id"]): _canonical_option_text(o["text"])
-        for o in options
-        if str(o.get("id", "")).strip()
-    }
-    candidate_keys = (
-        "correct_option",
-        "correctOption",
-        "correct_answer",
-        "correctAnswer",
-        "answer",
-        "option",
-        "choice",
-        "label",
-    )
-    for key in candidate_keys:
-        if key not in sol or sol[key] is None:
-            continue
-        cid = _normalize_option_id(sol[key])
-        if cid and cid in id_to_canon:
-            return id_to_canon[cid]
-    co = sol.get("correct_options")
-    if isinstance(co, list) and co:
-        cid = _normalize_option_id(co[0])
-        if cid and cid in id_to_canon:
-            return id_to_canon[cid]
-    return ""
-
-
 def _clean_options(options: Any) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for opt in _as_list(options):
@@ -393,16 +399,20 @@ class QuestionRow:
         stem_part = re.sub(r"\b\d+\b", " ", stem_part)
         stem_part = re.sub(r"\s+", " ", stem_part).strip()
         if self.question_type == "multiple_choice":
+            # Sort by canonical text (not option id) so that transposed answer
+            # orderings — same options, different A/B/C/D assignment — collapse
+            # to the same fingerprint. The correct-answer letter is intentionally
+            # excluded: it's irrelevant once option order is normalized, and
+            # relying on it would split duplicates whenever one copy hasn't been
+            # AI-corrected yet (solution_json still empty).
             opt_texts = sorted(_canonical_option_text(o["text"]) for o in self.options)
             options_part = "||".join(opt_texts)
-            correct_part = _mc_correct_canonical(self.solution, self.options)
         else:
             opts_sorted = sorted(self.options, key=lambda o: o["id"])
             options_part = "|".join(f"{o['id']}:{_canonical_option_text(o['text'])}" for o in opts_sorted)
-            correct_part = ""
         sub_sorted = sorted(self.subparts, key=lambda s: (s["id"], _canonical_text(s["prompt"])))
         subparts_part = "|".join(f"{s['id']}:{_canonical_text(s['prompt'])}" for s in sub_sorted)
-        payload = f"{self.question_type}##{stem_part}##{options_part}##{subparts_part}##{correct_part}"
+        payload = f"{self.question_type}##{stem_part}##{options_part}##{subparts_part}"
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
     @property

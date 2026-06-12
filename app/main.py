@@ -204,6 +204,11 @@ def admin_delete_documents(payload: AdminDeleteDocumentsIn) -> dict:
     return {"deleted": deleted, "missing": missing}
 
 
+@app.post("/admin/cleanup-dedupe")
+def admin_cleanup_dedupe() -> dict:
+    return run_cleanup_dedupe()
+
+
 @app.post("/admin/load-question-bank")
 def admin_load_question_bank(
     path: str = r"c:\Users\nextc\Examable\banca_domande_postprocessed.json",
@@ -1206,21 +1211,73 @@ def get_review_stats(
     }
 
 
-def _create_exhaustive_simulation(payload, _random) -> dict:
-    """Return ALL questions matching the filters, shuffled with tag interleaving."""
+_QUESTION_POOL_SELECT = """
+    SELECT
+      q.id, q.document_id, q.section, q.number_in_section, q.question_type, q.stem,
+      q.options_json, q.subparts_json, q.solution_json, q.confidence, q.needs_review,
+      (
+        SELECT COALESCE(jsonb_agg(t.slug ORDER BY t.slug), '[]'::jsonb)
+        FROM question_tags qt
+        JOIN tags t ON t.id = qt.tag_id
+        WHERE qt.question_id = q.id
+      ) AS tags_json
+    FROM questions q
+"""
+
+
+def _row_to_question_dict(row: Any) -> dict:
+    return {
+        "id": row["id"],
+        "document_id": row["document_id"],
+        "section": row["section"],
+        "number_in_section": row["number_in_section"],
+        "question_type": row["question_type"],
+        "stem": row["stem"],
+        "options": row["options_json"] or [],
+        "subparts": row["subparts_json"] or [],
+        "solution": row["solution_json"] or {},
+        "confidence": float(row["confidence"]),
+        "needs_review": bool(row["needs_review"]),
+        "tags": row["tags_json"] or [],
+    }
+
+
+def _build_simulation_clauses(payload: CustomSimulationIn) -> tuple[str, dict[str, Any]]:
+    """Build the shared WHERE clause for simulation question pools.
+
+    Multiple documents and tag presets are combined with OR ("union" of sources);
+    that union is then AND'd with the remaining filters (tag, only_reviewed_correct).
+    """
     clauses: list[str] = ["q.is_discarded = false"]
-    params: dict[str, str | int] = {}
-    if payload.document_id is not None:
-        clauses.append("q.document_id = :document_id")
-        params["document_id"] = str(payload.document_id)
-    tag_values = _parse_tag_values(payload.tag)
-    if tag_values:
-        tag_sql, tag_params = _question_has_any_tag_sql(param_prefix="tag_value", tag_values=tag_values)
-        if tag_sql:
-            clauses.append(tag_sql)
-            params.update(tag_params)
-    if payload.tag_preset and payload.tag_preset.strip():
-        clauses.append(
+    params: dict[str, Any] = {}
+
+    document_ids = [str(d) for d in payload.document_ids]
+    if payload.document_id is not None and str(payload.document_id) not in document_ids:
+        document_ids.append(str(payload.document_id))
+
+    tag_presets: list[str] = []
+    seen_presets: set[str] = set()
+    for preset in [*payload.tag_presets, payload.tag_preset or ""]:
+        preset = preset.strip()
+        if preset and preset not in seen_presets:
+            seen_presets.add(preset)
+            tag_presets.append(preset)
+
+    source_clauses: list[str] = []
+    if document_ids:
+        doc_clauses = []
+        for idx, doc_id in enumerate(document_ids):
+            key = f"doc_id_{idx}"
+            doc_clauses.append(f"q.document_id = :{key}")
+            params[key] = doc_id
+        source_clauses.append("(" + " OR ".join(doc_clauses) + ")")
+    if tag_presets:
+        preset_clauses = []
+        for idx, preset_val in enumerate(tag_presets):
+            key = f"tag_preset_{idx}"
+            preset_clauses.append(f"(tp.slug = :{key} OR tp.name = :{key} OR CAST(tp.id AS TEXT) = :{key})")
+            params[key] = preset_val
+        source_clauses.append(
             """
             EXISTS (
               SELECT 1
@@ -1228,11 +1285,22 @@ def _create_exhaustive_simulation(payload, _random) -> dict:
               JOIN tag_preset_tags ppt ON ppt.tag_id = qt2.tag_id
               JOIN tag_presets tp ON tp.id = ppt.preset_id
               WHERE qt2.question_id = q.id
-                AND (tp.slug = :tag_preset OR tp.name = :tag_preset OR CAST(tp.id AS TEXT) = :tag_preset)
+                AND ("""
+            + " OR ".join(preset_clauses)
+            + """)
             )
             """
         )
-        params["tag_preset"] = payload.tag_preset.strip()
+    if source_clauses:
+        clauses.append("(" + " OR ".join(source_clauses) + ")")
+
+    tag_values = _parse_tag_values(payload.tag)
+    if tag_values:
+        tag_sql, tag_params = _question_has_any_tag_sql(param_prefix="tag_value", tag_values=tag_values)
+        if tag_sql:
+            clauses.append(tag_sql)
+            params.update(tag_params)
+
     if payload.only_reviewed_correct:
         if payload.user_id is None:
             raise HTTPException(
@@ -1256,72 +1324,112 @@ def _create_exhaustive_simulation(payload, _random) -> dict:
         )
         params["review_user_id"] = str(payload.user_id)
 
-    where_sql = " AND ".join(clauses)
+    return " AND ".join(clauses), params
+
+
+def _priority_join_and_order(payload: CustomSimulationIn) -> tuple[str, str, dict[str, Any]]:
+    """Returns (join_sql, order_by_sql, params) implementing payload.priority_mode.
+
+    Empty strings are returned when priority_mode is "none".
+    """
+    if payload.priority_mode == "none":
+        return "", "", {}
+    if payload.user_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is required when priority_mode is set",
+        )
+    join_sql = """
+        LEFT JOIN (
+          SELECT question_id,
+                 COUNT(*) AS total_attempts,
+                 COUNT(*) FILTER (WHERE is_correct) AS correct_attempts,
+                 COUNT(*) FILTER (WHERE NOT is_correct) AS wrong_attempts
+          FROM attempts
+          WHERE user_id = :priority_user_id
+          GROUP BY question_id
+        ) a ON a.question_id = q.id
+    """
+    params = {"priority_user_id": str(payload.user_id)}
+    if payload.priority_mode == "never_viewed":
+        order_sql = "ORDER BY (COALESCE(a.total_attempts, 0) = 0) DESC, random()"
+    else:  # frequently_mistaken
+        order_sql = (
+            "ORDER BY (COALESCE(a.wrong_attempts,0)::float / GREATEST(COALESCE(a.total_attempts,0),1)) DESC, "
+            "COALESCE(a.wrong_attempts,0) DESC, random()"
+        )
+    return join_sql, order_sql, params
+
+
+def _persist_simulation(payload: CustomSimulationIn, questions_out: list[dict], requested_total: int) -> str | None:
+    if payload.user_id is None:
+        return None
+    simulation_id = str(uuid4())
     with engine.begin() as conn:
-        rows = conn.execute(
+        conn.execute(
             text(
                 """
-                SELECT
-                  q.id, q.document_id, q.section, q.number_in_section, q.question_type, q.stem,
-                  q.options_json, q.subparts_json, q.solution_json, q.confidence, q.needs_review,
-                  (
-                    SELECT COALESCE(jsonb_agg(t.slug ORDER BY t.slug), '[]'::jsonb)
-                    FROM question_tags qt
-                    JOIN tags t ON t.id = qt.tag_id
-                    WHERE qt.question_id = q.id
-                  ) AS tags_json
-                FROM questions q
-                WHERE
-                """
-                + where_sql
-                + """
-                ORDER BY random()
+                INSERT INTO simulations (id, user_id, config_json, question_ids_json, requested_total, generated_total, exhaustive)
+                VALUES (:id, :user_id, :config_json, :question_ids_json, :requested_total, :generated_total, :exhaustive)
                 """
             ),
+            {
+                "id": simulation_id,
+                "user_id": str(payload.user_id),
+                "config_json": json.dumps(payload.model_dump(mode="json")),
+                "question_ids_json": json.dumps([str(q["id"]) for q in questions_out]),
+                "requested_total": requested_total,
+                "generated_total": len(questions_out),
+                "exhaustive": payload.exhaustive,
+            },
+        )
+    return simulation_id
+
+
+def _create_exhaustive_simulation(payload: CustomSimulationIn, _random) -> dict:
+    """Return ALL questions matching the filters, optionally shuffled with tag interleaving."""
+    where_sql, params = _build_simulation_clauses(payload)
+    join_sql, priority_order_sql, priority_params = _priority_join_and_order(payload)
+    params.update(priority_params)
+    pool_order_sql = priority_order_sql or "ORDER BY random()"
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(_QUESTION_POOL_SELECT + join_sql + " WHERE " + where_sql + "\n" + pool_order_sql),
             params,
         ).mappings()
         pool = list(rows)
 
-    # Tag-interleaved shuffle for balanced topic distribution.
-    buckets: dict[str, list[dict]] = defaultdict(list)
-    for row in pool:
-        tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
-        primary_tag = tag_list[0] if tag_list else "__untagged__"
-        buckets[primary_tag].append(row)
-    for bucket in buckets.values():
-        _random.shuffle(bucket)
-    results: list[dict] = []
-    bucket_keys = list(buckets.keys())
-    _random.shuffle(bucket_keys)
-    round_idx = 0
-    remaining = True
-    while remaining:
-        remaining = False
-        for key in bucket_keys:
-            bucket = buckets[key]
-            if round_idx < len(bucket):
-                results.append(bucket[round_idx])
-                remaining = True
-        round_idx += 1
+    if payload.priority_mode != "none":
+        # Priority ordering takes precedence over topic-balance bucketing.
+        results = pool
+    elif payload.randomize:
+        # Tag-interleaved shuffle for balanced topic distribution.
+        buckets: dict[str, list[dict]] = defaultdict(list)
+        for row in pool:
+            tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
+            primary_tag = tag_list[0] if tag_list else "__untagged__"
+            buckets[primary_tag].append(row)
+        for bucket in buckets.values():
+            _random.shuffle(bucket)
+        results = []
+        bucket_keys = list(buckets.keys())
+        _random.shuffle(bucket_keys)
+        round_idx = 0
+        remaining = True
+        while remaining:
+            remaining = False
+            for key in bucket_keys:
+                bucket = buckets[key]
+                if round_idx < len(bucket):
+                    results.append(bucket[round_idx])
+                    remaining = True
+            round_idx += 1
+    else:
+        results = sorted(pool, key=lambda r: (str(r["document_id"]), r["section"], r["number_in_section"]))
 
-    questions_out = []
-    for row in results:
-        questions_out.append(
-            {
-                "id": row["id"],
-                "document_id": row["document_id"],
-                "section": row["section"],
-                "number_in_section": row["number_in_section"],
-                "question_type": row["question_type"],
-                "stem": row["stem"],
-                "options": row["options_json"] or [],
-                "subparts": row["subparts_json"] or [],
-                "solution": row["solution_json"] or {},
-                "confidence": float(row["confidence"]),
-                "needs_review": bool(row["needs_review"]),
-                "tags": row["tags_json"] or [],
-            }
-        )
+    questions_out = [_row_to_question_dict(row) for row in results]
+    simulation_id = _persist_simulation(payload, questions_out, requested_total=len(questions_out))
 
     return {
         "requested_total": len(questions_out),
@@ -1329,6 +1437,7 @@ def _create_exhaustive_simulation(payload, _random) -> dict:
         "requested_by_type": {},
         "shortage_by_type": {},
         "exhaustive": True,
+        "simulation_id": simulation_id,
         "questions": questions_out,
     }
 
@@ -1350,152 +1459,277 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
     if requested_total <= 0:
         raise HTTPException(status_code=400, detail="Select at least one question")
 
+    base_where_sql, base_params = _build_simulation_clauses(payload)
+    join_sql, priority_order_sql, priority_params = _priority_join_and_order(payload)
+
     results: list[dict] = []
     shortage: dict[str, int] = {}
     with engine.begin() as conn:
         for q_type, wanted in requested_by_type.items():
             if wanted <= 0:
                 continue
-            clauses = ["q.question_type = :question_type", "q.is_discarded = false"]
-            params: dict[str, str | int] = {"question_type": q_type}
-            if payload.document_id is not None:
-                clauses.append("q.document_id = :document_id")
-                params["document_id"] = str(payload.document_id)
-            tag_values = _parse_tag_values(payload.tag)
-            if tag_values:
-                tag_sql, tag_params = _question_has_any_tag_sql(param_prefix="tag_value", tag_values=tag_values)
-                if tag_sql:
-                    clauses.append(tag_sql)
-                    params.update(tag_params)
-            if payload.tag_preset and payload.tag_preset.strip():
-                clauses.append(
-                    """
-                    EXISTS (
-                      SELECT 1
-                      FROM question_tags qt2
-                      JOIN tag_preset_tags ppt ON ppt.tag_id = qt2.tag_id
-                      JOIN tag_presets tp ON tp.id = ppt.preset_id
-                      WHERE qt2.question_id = q.id
-                        AND (tp.slug = :tag_preset OR tp.name = :tag_preset OR CAST(tp.id AS TEXT) = :tag_preset)
-                    )
-                    """
-                )
-                params["tag_preset"] = payload.tag_preset.strip()
-            if payload.only_reviewed_correct:
-                if payload.user_id is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="user_id is required when only_reviewed_correct is true",
-                    )
-                clauses.append(
-                    """
-                    EXISTS (
-                      SELECT 1
-                      FROM question_corrections qc
-                      WHERE qc.question_id = q.id
-                        AND qc.user_id = :review_user_id
-                        AND (
-                          qc.correct_option_id IS NOT NULL
-                          OR COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), NULL) IS NOT NULL
-                          OR qc.answer_payload <> '{}'::jsonb
-                        )
-                    )
-                    """
-                )
-                params["review_user_id"] = str(payload.user_id)
+            where_sql = "q.question_type = :question_type AND " + base_where_sql
+            params: dict[str, Any] = dict(base_params)
+            params.update(priority_params)
+            params["question_type"] = q_type
 
-            where_sql = " AND ".join(clauses)
-
-            # ---------- tag-distributed sampling ----------
-            # Fetch all eligible questions with their first tag for bucketing.
-            pool_limit = max(wanted * 6, 600)
-            params["pool_limit"] = pool_limit
-            pool_rows = conn.execute(
-                text(
-                    """
-                    SELECT
-                      q.id, q.document_id, q.section, q.number_in_section, q.question_type, q.stem,
-                      q.options_json, q.subparts_json, q.solution_json, q.confidence, q.needs_review,
-                      (
-                        SELECT COALESCE(jsonb_agg(t.slug ORDER BY t.slug), '[]'::jsonb)
-                        FROM question_tags qt
-                        JOIN tags t ON t.id = qt.tag_id
-                        WHERE qt.question_id = q.id
-                      ) AS tags_json
-                    FROM questions q
-                    WHERE
-                    """
-                    + where_sql
-                    + """
-                    ORDER BY random()
-                    LIMIT :pool_limit
-                    """
-                ),
-                params,
-            ).mappings()
-            pool = list(pool_rows)
-
-            if len(pool) <= wanted:
-                # Not enough questions — just take them all.
-                selected = pool
+            if payload.priority_mode != "none":
+                # Priority ordering takes precedence over topic-balance bucketing:
+                # take the top `wanted` rows in priority order directly.
+                params["pool_limit"] = wanted
+                pool_rows = conn.execute(
+                    text(
+                        _QUESTION_POOL_SELECT
+                        + join_sql
+                        + " WHERE "
+                        + where_sql
+                        + "\n"
+                        + priority_order_sql
+                        + "\nLIMIT :pool_limit"
+                    ),
+                    params,
+                ).mappings()
+                selected = list(pool_rows)
             else:
-                # Bucket by primary tag for equal coverage across topics.
-                buckets: dict[str, list[dict]] = defaultdict(list)
-                for row in pool:
-                    tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
-                    primary_tag = tag_list[0] if tag_list else "__untagged__"
-                    buckets[primary_tag].append(row)
-                # Shuffle within each bucket.
-                for bucket in buckets.values():
-                    _random.shuffle(bucket)
-                # Round-robin pick from buckets until we have enough.
-                selected: list[dict] = []
-                bucket_keys = list(buckets.keys())
-                _random.shuffle(bucket_keys)
-                round_idx = 0
-                while len(selected) < wanted:
-                    picked_this_round = False
-                    for key in bucket_keys:
-                        if len(selected) >= wanted:
+                # ---------- tag-distributed sampling ----------
+                # Fetch all eligible questions with their first tag for bucketing.
+                pool_limit = max(wanted * 6, 600)
+                params["pool_limit"] = pool_limit
+                pool_rows = conn.execute(
+                    text(
+                        _QUESTION_POOL_SELECT
+                        + " WHERE "
+                        + where_sql
+                        + """
+                        ORDER BY random()
+                        LIMIT :pool_limit
+                        """
+                    ),
+                    params,
+                ).mappings()
+                pool = list(pool_rows)
+
+                if len(pool) <= wanted:
+                    # Not enough questions — just take them all.
+                    selected = pool
+                else:
+                    # Bucket by primary tag for equal coverage across topics.
+                    buckets: dict[str, list[dict]] = defaultdict(list)
+                    for row in pool:
+                        tag_list = row["tags_json"] if isinstance(row["tags_json"], list) else []
+                        primary_tag = tag_list[0] if tag_list else "__untagged__"
+                        buckets[primary_tag].append(row)
+                    # Shuffle within each bucket.
+                    for bucket in buckets.values():
+                        _random.shuffle(bucket)
+                    # Round-robin pick from buckets until we have enough.
+                    selected = []
+                    bucket_keys = list(buckets.keys())
+                    _random.shuffle(bucket_keys)
+                    round_idx = 0
+                    while len(selected) < wanted:
+                        picked_this_round = False
+                        for key in bucket_keys:
+                            if len(selected) >= wanted:
+                                break
+                            bucket = buckets[key]
+                            if round_idx < len(bucket):
+                                selected.append(bucket[round_idx])
+                                picked_this_round = True
+                        round_idx += 1
+                        if not picked_this_round:
                             break
-                        bucket = buckets[key]
-                        if round_idx < len(bucket):
-                            selected.append(bucket[round_idx])
-                            picked_this_round = True
-                    round_idx += 1
-                    if not picked_this_round:
-                        break
 
             if len(selected) < wanted:
                 shortage[q_type] = wanted - len(selected)
             for row in selected:
-                results.append(
-                    {
-                        "id": row["id"],
-                        "document_id": row["document_id"],
-                        "section": row["section"],
-                        "number_in_section": row["number_in_section"],
-                        "question_type": row["question_type"],
-                        "stem": row["stem"],
-                        "options": row["options_json"] or [],
-                        "subparts": row["subparts_json"] or [],
-                        "solution": row["solution_json"] or {},
-                        "confidence": float(row["confidence"]),
-                        "needs_review": bool(row["needs_review"]),
-                        "tags": row["tags_json"] or [],
-                    }
-                )
+                results.append(_row_to_question_dict(row))
 
-    # Shuffle the final list so question types are interleaved.
-    _random.shuffle(results)
+    # Final ordering: shuffle (default) or original extraction order.
+    if payload.randomize:
+        _random.shuffle(results)
+    else:
+        results.sort(key=lambda r: (str(r["document_id"]), r["section"], r["number_in_section"]))
+
+    simulation_id = _persist_simulation(payload, results, requested_total=requested_total)
 
     return {
         "requested_total": requested_total,
         "generated_total": len(results),
         "requested_by_type": requested_by_type,
         "shortage_by_type": shortage,
+        "simulation_id": simulation_id,
         "questions": results,
     }
+
+
+@app.get("/simulations")
+def list_simulations(user_id: UUID, limit: int = 20) -> list[dict]:
+    limit = max(1, min(limit, 100))
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                  s.id, s.created_at, s.config_json, s.requested_total, s.generated_total, s.exhaustive,
+                  COALESCE(a.answered_count, 0) AS answered_count,
+                  COALESCE(a.correct_count, 0) AS correct_count
+                FROM simulations s
+                LEFT JOIN (
+                  SELECT simulation_id,
+                         COUNT(*) AS answered_count,
+                         COUNT(*) FILTER (WHERE is_correct) AS correct_count
+                  FROM attempts
+                  WHERE user_id = :user_id AND simulation_id IS NOT NULL
+                  GROUP BY simulation_id
+                ) a ON a.simulation_id = s.id
+                WHERE s.user_id = :user_id
+                ORDER BY s.created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"user_id": str(user_id), "limit": limit},
+        ).mappings()
+        result = []
+        for row in rows:
+            config = row["config_json"]
+            if isinstance(config, str):
+                config = json.loads(config)
+            result.append(
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"].isoformat(),
+                    "requested_total": row["requested_total"],
+                    "generated_total": row["generated_total"],
+                    "exhaustive": row["exhaustive"],
+                    "config": config or {},
+                    "answered_count": int(row["answered_count"]),
+                    "correct_count": int(row["correct_count"]),
+                }
+            )
+        return result
+
+
+@app.get("/simulations/{simulation_id}")
+def get_simulation(simulation_id: UUID) -> dict:
+    with engine.begin() as conn:
+        sim = conn.execute(
+            text(
+                """
+                SELECT id, user_id, created_at, config_json, question_ids_json,
+                       requested_total, generated_total, exhaustive
+                FROM simulations
+                WHERE id = :id
+                """
+            ),
+            {"id": str(simulation_id)},
+        ).mappings().first()
+        if not sim:
+            raise HTTPException(status_code=404, detail="Simulation not found")
+
+        question_ids_json = sim["question_ids_json"]
+        if isinstance(question_ids_json, str):
+            question_ids_json = json.loads(question_ids_json)
+        question_ids = [str(q) for q in (question_ids_json or [])]
+
+        questions_by_id: dict[str, dict] = {}
+        if question_ids:
+            id_clauses = []
+            params: dict[str, Any] = {}
+            for idx, qid in enumerate(question_ids):
+                key = f"qid_{idx}"
+                id_clauses.append(f":{key}")
+                params[key] = qid
+            rows = conn.execute(
+                text(_QUESTION_POOL_SELECT + " WHERE q.id IN (" + ", ".join(id_clauses) + ")"),
+                params,
+            ).mappings()
+            for row in rows:
+                questions_by_id[str(row["id"])] = _row_to_question_dict(row)
+
+        attempts_by_question: dict[str, dict] = {}
+        attempt_rows = conn.execute(
+            text(
+                """
+                SELECT question_id, is_correct, answer_payload, answered_at
+                FROM attempts
+                WHERE simulation_id = :simulation_id
+                ORDER BY answered_at ASC
+                """
+            ),
+            {"simulation_id": str(simulation_id)},
+        ).mappings()
+        for row in attempt_rows:
+            answer_payload = row["answer_payload"]
+            if isinstance(answer_payload, str):
+                answer_payload = json.loads(answer_payload)
+            attempts_by_question[str(row["question_id"])] = {
+                "is_correct": row["is_correct"],
+                "answer_payload": answer_payload or {},
+            }
+
+    questions_out = []
+    for qid in question_ids:
+        q = questions_by_id.get(qid)
+        if not q:
+            continue
+        q = dict(q)
+        q["attempt"] = attempts_by_question.get(qid)
+        questions_out.append(q)
+
+    config = sim["config_json"]
+    if isinstance(config, str):
+        config = json.loads(config)
+
+    return {
+        "id": sim["id"],
+        "created_at": sim["created_at"].isoformat(),
+        "requested_total": sim["requested_total"],
+        "generated_total": sim["generated_total"],
+        "exhaustive": sim["exhaustive"],
+        "config": config or {},
+        "answered_count": len(attempts_by_question),
+        "correct_count": sum(1 for a in attempts_by_question.values() if a["is_correct"]),
+        "questions": questions_out,
+    }
+
+
+@app.delete("/simulations/{simulation_id}")
+def delete_simulation(simulation_id: UUID) -> dict:
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM simulations WHERE id = :id"),
+            {"id": str(simulation_id)},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Simulation not found")
+    return {"deleted": True, "id": str(simulation_id)}
+
+
+@app.get("/attempts/stats/{user_id}")
+def get_attempt_stats(user_id: UUID) -> list[dict]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT question_id,
+                       COUNT(*) AS total_attempts,
+                       COUNT(*) FILTER (WHERE is_correct) AS correct_attempts
+                FROM attempts
+                WHERE user_id = :user_id
+                GROUP BY question_id
+                """
+            ),
+            {"user_id": str(user_id)},
+        ).mappings()
+        return [
+            {
+                "question_id": row["question_id"],
+                "total_attempts": int(row["total_attempts"]),
+                "correct_attempts": int(row["correct_attempts"]),
+            }
+            for row in rows
+        ]
 
 
 @app.get("/users/default")
@@ -1765,8 +1999,8 @@ def create_attempt(payload: AttemptIn) -> dict[str, str]:
         conn.execute(
             text(
                 """
-                INSERT INTO attempts (id, user_id, question_id, answered_at, is_correct, answer_payload, latency_ms, grade)
-                VALUES (:id, :user_id, :question_id, :answered_at, :is_correct, :answer_payload, :latency_ms, :grade)
+                INSERT INTO attempts (id, user_id, question_id, answered_at, is_correct, answer_payload, latency_ms, grade, simulation_id)
+                VALUES (:id, :user_id, :question_id, :answered_at, :is_correct, :answer_payload, :latency_ms, :grade, :simulation_id)
                 """
             ),
             {
@@ -1778,6 +2012,7 @@ def create_attempt(payload: AttemptIn) -> dict[str, str]:
                 "answer_payload": json.dumps(payload.answer_payload),
                 "latency_ms": payload.latency_ms,
                 "grade": payload.grade,
+                "simulation_id": str(payload.simulation_id) if payload.simulation_id else None,
             },
         )
 
