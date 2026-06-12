@@ -178,6 +178,13 @@ INTERCORSO_1_PRESET_DESCRIPTION = (
 )
 INTERCORSO_1_BANK_PATH = Path(r"c:\Users\nextc\Examable\banca_domande_postprocessed.json")
 
+MODULE_2_PRESET_SLUG = "modulo-2"
+MODULE_2_PRESET_NAME = "Modulo 2"
+MODULE_2_PRESET_DESCRIPTION = (
+    "Domande dal secondo intercorso e dai temi d'esame passati (esame_*/traccia_*)."
+)
+MODULE_2_DOC_TITLE_SQL = r"^(esame|traccia)_.*\.pdf$"
+
 
 def _slugify(value: str) -> str:
     s = unicodedata.normalize("NFKD", value or "")
@@ -406,6 +413,39 @@ def ensure_intercorso_1_preset(conn: Any) -> None:
         name=INTERCORSO_1_PRESET_NAME,
         slug=INTERCORSO_1_PRESET_SLUG,
         description=INTERCORSO_1_PRESET_DESCRIPTION,
+        tag_slugs=tag_slugs,
+    )
+
+
+def _module_2_tag_slugs(conn: Any) -> list[str]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT DISTINCT t.slug
+            FROM question_tags qt
+            JOIN tags t ON t.id = qt.tag_id
+            JOIN questions q ON q.id = qt.question_id
+            JOIN documents d ON d.id = q.document_id
+            WHERE d.title = 'domande_seconda_intercorso.pdf'
+               OR d.title ~* :title_pattern
+            """
+        ),
+        {"title_pattern": MODULE_2_DOC_TITLE_SQL},
+    ).all()
+    return [r[0] for r in rows]
+
+
+def ensure_module_2_preset(conn: Any) -> None:
+    ensure_base_tags(conn)
+    ensure_tagging_schema(conn)
+    tag_slugs = _module_2_tag_slugs(conn)
+    if not tag_slugs:
+        return
+    _ensure_preset(
+        conn,
+        name=MODULE_2_PRESET_NAME,
+        slug=MODULE_2_PRESET_SLUG,
+        description=MODULE_2_PRESET_DESCRIPTION,
         tag_slugs=tag_slugs,
     )
 

@@ -40,7 +40,13 @@ from app.schemas import (
     TagCreateIn,
     UploadResponse,
 )
-from app.tagging import auto_tag_document, ensure_base_tags, ensure_intercorso_1_preset, ensure_module_1_preset
+from app.tagging import (
+    auto_tag_document,
+    ensure_base_tags,
+    ensure_intercorso_1_preset,
+    ensure_module_1_preset,
+    ensure_module_2_preset,
+)
 
 app = FastAPI(title="Examable API", version="0.1.0")
 templates = Jinja2Templates(directory="app/templates")
@@ -54,6 +60,7 @@ def _startup_migrations() -> None:
         ensure_base_tags(conn)
         ensure_module_1_preset(conn)
         ensure_intercorso_1_preset(conn)
+        ensure_module_2_preset(conn)
     # Any "queued"/"running" rows can only be from a previous process — mark them so the
     # partial unique index allows new jobs immediately.
     mark_orphan_running_as_interrupted()
@@ -161,6 +168,7 @@ def admin_reset_db() -> dict:
         ensure_base_tags(conn)
         ensure_module_1_preset(conn)
         ensure_intercorso_1_preset(conn)
+        ensure_module_2_preset(conn)
     return {"status": "ok", "message": "database reset completed"}
 
 
