@@ -26,6 +26,7 @@ from app.multimodal import enhance_with_multimodal
 from app.parser import compute_sha256, extract_text_pages_with_fallback, parse_unisa_questions
 from app.scheduler import next_due_after_attempt
 from app.schemas import (
+    AdminDeleteDocumentsIn,
     AttemptIn,
     CorrectionJobFailureOut,
     CorrectionJobOut,
@@ -161,6 +162,38 @@ def admin_reset_db() -> dict:
         ensure_module_1_preset(conn)
         ensure_intercorso_1_preset(conn)
     return {"status": "ok", "message": "database reset completed"}
+
+
+@app.post("/admin/delete-documents")
+def admin_delete_documents(payload: AdminDeleteDocumentsIn) -> dict:
+    deleted: list[dict] = []
+    missing: list[str] = []
+    with engine.begin() as conn:
+        for doc_id in payload.document_ids:
+            doc_id_str = str(doc_id)
+            row = conn.execute(
+                text("SELECT id, title, source_uri FROM documents WHERE id = :id"),
+                {"id": doc_id_str},
+            ).mappings().first()
+            if not row:
+                missing.append(doc_id_str)
+                continue
+            qcount = conn.execute(
+                text("SELECT COUNT(*) FROM questions WHERE document_id = :id"),
+                {"id": doc_id_str},
+            ).scalar_one()
+            conn.execute(text("DELETE FROM documents WHERE id = :id"), {"id": doc_id_str})
+            source_path = Path(str(row["source_uri"]))
+            if source_path.exists() and source_path.is_file():
+                source_path.unlink()
+            deleted.append(
+                {
+                    "id": doc_id_str,
+                    "title": row["title"],
+                    "questions": int(qcount or 0),
+                }
+            )
+    return {"deleted": deleted, "missing": missing}
 
 
 @app.post("/admin/load-question-bank")

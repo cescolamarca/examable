@@ -125,6 +125,10 @@ class QuestionCorrectionSetIn(BaseModel):
     answer_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class AdminDeleteDocumentsIn(BaseModel):
+    document_ids: list[UUID]
+
+
 class CorrectionJobStartIn(BaseModel):
     user_id: UUID
     mode: Literal["document", "frequency"]
