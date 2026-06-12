@@ -69,6 +69,7 @@ class AttemptIn(BaseModel):
     grade: int | None = Field(default=None, ge=0, le=5)
     latency_ms: int | None = Field(default=None, ge=0)
     answer_payload: dict[str, Any] = Field(default_factory=dict)
+    simulation_id: UUID | None = None
 
 
 class NextQuestionResponse(BaseModel):
@@ -83,9 +84,13 @@ class CustomSimulationIn(BaseModel):
     tag: str | None = None
     tag_preset: str | None = None
     document_id: UUID | None = None
+    tag_presets: list[str] = Field(default_factory=list)
+    document_ids: list[UUID] = Field(default_factory=list)
     user_id: UUID | None = None
     only_reviewed_correct: bool = False
     exhaustive: bool = False
+    priority_mode: Literal["none", "never_viewed", "frequently_mistaken"] = "none"
+    randomize: bool = True
 
 
 class TagOut(BaseModel):

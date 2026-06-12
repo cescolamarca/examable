@@ -13,7 +13,7 @@ const studySession = {
   historyIndex: -1,
   shuffleNew: false
 };
-const customSimulation = { questions: [], index: 0 };
+const customSimulation = { questions: [], index: 0, simulationId: null };
 const simulationCorrectionCache = new Map();
 const immersionSession = {
   questions: [],
@@ -255,15 +255,13 @@ function renderStudyDocumentFilter(rows) {
   } else {
     select.value = "";
   }
-  const simSelect = el("sim-document-id");
+  const simSelect = el("sim-document-ids");
   if (simSelect) {
-    const simCurrent = simSelect.value;
-    simSelect.innerHTML = `<option value="">Tutti i documenti</option>${options}`;
-    if (rows.some((d) => d.id === simCurrent)) {
-      simSelect.value = simCurrent;
-    } else {
-      simSelect.value = "";
-    }
+    const previouslySelected = Array.from(simSelect.selectedOptions).map((o) => o.value);
+    simSelect.innerHTML = options;
+    Array.from(simSelect.options).forEach((o) => {
+      if (previouslySelected.includes(o.value)) o.selected = true;
+    });
   }
 }
 
@@ -283,11 +281,13 @@ function renderTagPresetOptions() {
     studySelect.innerHTML = `<option value="">Nessun preset</option>${options}`;
     if (cachedTagPresets.some((p) => p.slug === prev)) studySelect.value = prev;
   }
-  const simSelect = el("sim-tag-preset");
+  const simSelect = el("sim-tag-presets");
   if (simSelect) {
-    const prev = simSelect.value;
-    simSelect.innerHTML = `<option value="">Nessun preset</option>${options}`;
-    if (cachedTagPresets.some((p) => p.slug === prev)) simSelect.value = prev;
+    const previouslySelected = Array.from(simSelect.selectedOptions).map((o) => o.value);
+    simSelect.innerHTML = options;
+    Array.from(simSelect.options).forEach((o) => {
+      if (previouslySelected.includes(o.value)) o.selected = true;
+    });
   }
 }
 
@@ -665,7 +665,8 @@ async function submitImmersionAttempt(questionId, isCorrect, answerPayload = {})
       question_id: questionId,
       is_correct: isCorrect,
       grade: isCorrect ? 4 : 1,
-      answer_payload: answerPayload
+      answer_payload: answerPayload,
+      simulation_id: customSimulation.simulationId || null
     })
   });
 }
@@ -698,8 +699,10 @@ function renderImmersionBaseState() {
   const progressBar = el("immersion-progress-bar");
   const score = el("immersion-score");
   const sessionTitle = el("immersion-session-title");
+  const flagMenu = el("immersion-question-flag");
   if (!immersionSession.questions.length) {
     if (tag) tag.textContent = "Simulazione";
+    if (flagMenu) flagMenu.innerHTML = "";
     if (title) title.textContent = "Genera una simulazione per iniziare la modalità full immersion.";
     if (optionsWrap) {
       optionsWrap.innerHTML = `
@@ -752,6 +755,19 @@ async function handleImmersionOptionClick(optionId) {
     updateWrongAnswersUI();
   }
 
+  await renderAnswerFeedback(q, { normalizedSelected, isShowSolution, previouslyAnswered, isCorrect, hasKnownCorrect, correctOption });
+
+  if (hasKnownCorrect && !previouslyAnswered) {
+    await submitImmersionAttempt(q.id, isCorrect, {
+      simulation_mode: "immersion",
+      selected_option: optionId,
+      selected_option_normalized: normalizedSelected,
+      auto_evaluated: true
+    });
+  }
+}
+
+async function renderAnswerFeedback(q, { normalizedSelected, isShowSolution, previouslyAnswered, isCorrect, hasKnownCorrect, correctOption }) {
   let explanation = "";
   if (q.solution) {
     explanation = q.solution.explanation || q.solution.comment || q.solution.reasoning || q.solution.spiegazione || "";
@@ -774,13 +790,13 @@ async function handleImmersionOptionClick(optionId) {
       feedback.classList.add("error");
     }
   }
-  
+
   const feedbackIcon = feedback ? feedback.querySelector(".immersion-feedback-icon") : null;
   if (feedbackIcon) {
     if (!previouslyAnswered && isShowSolution) feedbackIcon.textContent = "✗";
     else feedbackIcon.textContent = isCorrect ? "✓" : "✗";
   }
-  
+
   if (feedbackTitle) {
     if (!hasKnownCorrect) {
       feedbackTitle.textContent = "Correzione non disponibile";
@@ -792,7 +808,7 @@ async function handleImmersionOptionClick(optionId) {
       feedbackTitle.textContent = "Risposta sbagliata";
     }
   }
-  
+
   if (feedbackBody) {
     let msg = "";
     if (!hasKnownCorrect) {
@@ -804,11 +820,11 @@ async function handleImmersionOptionClick(optionId) {
     } else {
       msg = `Risposta attesa: ${correctOption.toUpperCase()}. Rileggi il prompt e prova la successiva.`;
     }
-    
+
     if (explanation) {
       msg += `\n\n📝 Spiegazione:\n${explanation}`;
     }
-    
+
     feedbackBody.textContent = msg;
     feedbackBody.style.whiteSpace = "pre-wrap";
   }
@@ -820,15 +836,6 @@ async function handleImmersionOptionClick(optionId) {
     if (normalizedSelected && id === normalizedSelected) btn.classList.add("is-selected");
     if (hasKnownCorrect && id === correctOption) btn.classList.add("is-correct");
     if (hasKnownCorrect && id === normalizedSelected && !isCorrect) btn.classList.add("is-wrong");
-  }
-
-  if (hasKnownCorrect && !previouslyAnswered) {
-    await submitImmersionAttempt(q.id, isCorrect, {
-      simulation_mode: "immersion",
-      selected_option: optionId,
-      selected_option_normalized: normalizedSelected,
-      auto_evaluated: true
-    });
   }
 }
 
@@ -864,6 +871,19 @@ function renderSimulationQuestion() {
     const tagList = Array.isArray(q.tags) ? q.tags : [];
     const tagPills = tagList.length ? tagList.map(t => `<span class="pill">${t}</span>`).join(" ") : "";
     tag.innerHTML = `${q.question_type} · ${q.section} ${q.number_in_section}${tagPills ? " " + tagPills : ""}`;
+  }
+  const flagMenu = el("immersion-question-flag");
+  if (flagMenu) {
+    flagMenu.innerHTML = flagMenuMarkup(q.id);
+    const flagSelect = flagMenu.querySelector("select");
+    if (flagSelect) {
+      flagSelect.addEventListener("change", async () => {
+        if (flagSelect.value === "discard") {
+          await flagQuestionAndRemove(q.id);
+        }
+        flagSelect.value = "";
+      });
+    }
   }
   if (title) title.textContent = String(q.stem || "");
 
@@ -988,6 +1008,12 @@ function readCountInput(id) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function getMultiSelectValues(id) {
+  const select = el(id);
+  if (!select) return [];
+  return Array.from(select.selectedOptions).map((o) => o.value).filter(Boolean);
+}
+
 async function generateCustomSimulation() {
   const status = el("simulation-status");
   try {
@@ -997,8 +1023,10 @@ async function generateCustomSimulation() {
       open_text_count: readCountInput("sim-open-count"),
       multi_part_open_count: readCountInput("sim-multi-count"),
       tag: el("sim-tag").value.trim() || null,
-      tag_preset: el("sim-tag-preset").value.trim() || null,
-      document_id: el("sim-document-id").value.trim() || null,
+      document_ids: getMultiSelectValues("sim-document-ids"),
+      tag_presets: getMultiSelectValues("sim-tag-presets"),
+      priority_mode: el("sim-priority-mode")?.value || "none",
+      randomize: Boolean(el("sim-randomize")?.checked),
       user_id: userId,
       only_reviewed_correct: Boolean(el("sim-only-reviewed-correct")?.checked)
     };
@@ -1019,6 +1047,7 @@ async function generateCustomSimulation() {
     });
     customSimulation.questions = result.questions || [];
     customSimulation.index = 0;
+    customSimulation.simulationId = result.simulation_id || null;
     immersionSession.questions = customSimulation.questions;
     immersionSession.index = 0;
     immersionSession.answered = false;
@@ -1043,6 +1072,7 @@ async function generateCustomSimulation() {
         : `Generate ${result.generated_total} domande.`
     );
     renderSimulationQuestion();
+    updateSimulationUrl();
     // Auto-switch to simulation tab
     if (typeof switchStudyTab === "function") switchStudyTab("sim");
   } catch (err) {
@@ -1059,8 +1089,10 @@ async function generateExhaustiveSimulation() {
       open_text_count: 0,
       multi_part_open_count: 0,
       tag: el("sim-tag").value.trim() || null,
-      tag_preset: el("sim-tag-preset").value.trim() || null,
-      document_id: el("sim-document-id").value.trim() || null,
+      document_ids: getMultiSelectValues("sim-document-ids"),
+      tag_presets: getMultiSelectValues("sim-tag-presets"),
+      priority_mode: el("sim-priority-mode")?.value || "none",
+      randomize: Boolean(el("sim-randomize")?.checked),
       user_id: userId,
       only_reviewed_correct: Boolean(el("sim-only-reviewed-correct")?.checked),
       exhaustive: true
@@ -1073,6 +1105,7 @@ async function generateExhaustiveSimulation() {
     });
     customSimulation.questions = result.questions || [];
     customSimulation.index = 0;
+    customSimulation.simulationId = result.simulation_id || null;
     immersionSession.questions = customSimulation.questions;
     immersionSession.index = 0;
     immersionSession.answered = false;
@@ -1090,6 +1123,7 @@ async function generateExhaustiveSimulation() {
     }
     setInlineStatus(status, `Simulazione esaustiva: ${result.generated_total} domande caricate.`);
     renderSimulationQuestion();
+    updateSimulationUrl();
     if (typeof switchStudyTab === "function") switchStudyTab("sim");
   } catch (err) {
     setInlineStatus(status, err.message, true);
@@ -1135,6 +1169,7 @@ function updateWrongAnswersUI() {
           <strong>${q.section} ${q.number_in_section}</strong>
           <span class="pill">${q.question_type}</span>
           ${tags}
+          ${flagTrashButtonMarkup(q.id)}
         </div>
         <div class="question-stem">${q.stem}</div>
         <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;">${optionsList}</div>
@@ -1142,6 +1177,273 @@ function updateWrongAnswersUI() {
       </div>
     `;
   }).join("");
+
+  Array.from(list.querySelectorAll("[data-flag-question]")).forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await flagQuestionAndRemove(btn.getAttribute("data-flag-question"));
+    });
+  });
+}
+
+function formatSimulationConfigSummary(sim) {
+  const cfg = sim.config || {};
+  const parts = [];
+  if (cfg.document_ids && cfg.document_ids.length) parts.push(`${cfg.document_ids.length} documenti`);
+  if (cfg.tag_presets && cfg.tag_presets.length) parts.push(`${cfg.tag_presets.length} preset`);
+  if (sim.exhaustive) {
+    return ["Esaustiva", ...parts].join(" · ");
+  }
+  const counts = [];
+  if (cfg.multiple_choice_count) counts.push(`${cfg.multiple_choice_count} MC`);
+  if (cfg.open_text_count) counts.push(`${cfg.open_text_count} aperte`);
+  if (cfg.multi_part_open_count) counts.push(`${cfg.multi_part_open_count} multi`);
+  return [counts.join(" + ") || "Simulazione", ...parts].join(" · ");
+}
+
+async function loadSimulationHistory() {
+  const list = el("simulation-history-list");
+  const emptyState = el("simulation-history-empty");
+  const reviewBox = el("simulation-review");
+  if (!list) return;
+  try {
+    const userId = await ensureDefaultUser();
+    const sims = await api(`/simulations?user_id=${userId}&limit=20`);
+    if (reviewBox) reviewBox.innerHTML = "";
+    if (!sims.length) {
+      list.innerHTML = "";
+      if (emptyState) emptyState.classList.remove("hidden");
+      return;
+    }
+    if (emptyState) emptyState.classList.add("hidden");
+    list.innerHTML = sims.map((sim) => {
+      const date = new Date(sim.created_at).toLocaleString("it-IT");
+      const summary = formatSimulationConfigSummary(sim);
+      const score = `${sim.correct_count}/${sim.answered_count} corrette su ${sim.generated_total} domande`;
+      return `
+        <div class="question-item">
+          <div class="question-header">
+            <strong>${date}</strong>
+            <span class="pill">${summary}</span>
+          </div>
+          <div class="muted small">${score}</div>
+          <div class="row" style="margin-top:8px;">
+            <button type="button" class="secondary" data-review-simulation="${sim.id}">Rivedi</button>
+            <button type="button" class="btn-icon danger-ghost" data-delete-simulation="${sim.id}" title="Elimina simulazione" aria-label="Elimina simulazione">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+    Array.from(list.querySelectorAll("[data-review-simulation]")).forEach((btn) => {
+      btn.addEventListener("click", () => reviewSimulation(btn.getAttribute("data-review-simulation")));
+    });
+    Array.from(list.querySelectorAll("[data-delete-simulation]")).forEach((btn) => {
+      btn.addEventListener("click", () => deleteSimulationFromHistory(btn.getAttribute("data-delete-simulation")));
+    });
+  } catch (err) {
+    list.innerHTML = `<p class="muted small">${err.message}</p>`;
+  }
+}
+
+async function reviewSimulation(simulationId) {
+  const reviewBox = el("simulation-review");
+  if (!reviewBox) return;
+  reviewBox.innerHTML = `<p class="muted small">Caricamento...</p>`;
+  try {
+    const sim = await api(`/simulations/${simulationId}`);
+    const items = (sim.questions || []).map((q, idx) => {
+      const tags = (q.tags || []).map((t) => `<span class="pill">${t}</span>`).join(" ");
+      const attempt = q.attempt;
+      const correctOptionId = effectiveCorrectOptionId(q.solution, null);
+      const correctNorm = correctOptionId ? normalizeOptionId(correctOptionId) : "";
+      const selectedRaw = attempt?.answer_payload?.selected_option;
+      const selectedNorm = selectedRaw ? normalizeOptionId(selectedRaw) : "";
+      let answerInfo = "<em>Non risposta</em>";
+      if (attempt) {
+        const selectedLabel = selectedRaw ? `Risposta data: <strong>${String(selectedRaw).toUpperCase()}</strong>` : "";
+        const resultLabel = attempt.is_correct ? "✓ Corretta" : "✗ Sbagliata";
+        answerInfo = `${selectedLabel ? selectedLabel + " · " : ""}${resultLabel}`;
+      }
+      const optionsList = (q.options || []).map((o) => {
+        const normId = normalizeOptionId(o.id);
+        let cls = "";
+        if (correctNorm && normId === correctNorm) cls = "ok";
+        else if (selectedNorm && normId === selectedNorm && attempt && !attempt.is_correct) cls = "warn";
+        return `<div class="pill ${cls}"><strong>${o.id}</strong> ${o.text}</div>`;
+      }).join(" ");
+      return `
+        <div class="question-item reveal-item" style="animation-delay:${idx * 30}ms;">
+          <div class="question-header">
+            <strong>${q.section} ${q.number_in_section}</strong>
+            <span class="pill">${q.question_type}</span>
+            ${tags}
+          </div>
+          <div class="question-stem">${q.stem}</div>
+          ${optionsList ? `<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;">${optionsList}</div>` : ""}
+          <div class="muted small" style="margin-top:10px;">${answerInfo}</div>
+        </div>
+      `;
+    }).join("");
+    reviewBox.innerHTML = `<h3>Domande della simulazione</h3>${items}`;
+  } catch (err) {
+    reviewBox.innerHTML = `<p class="muted small">${err.message}</p>`;
+  }
+}
+
+async function deleteSimulationFromHistory(simulationId) {
+  const ok = window.confirm("Eliminare definitivamente questa simulazione dalla cronologia? L'azione non può essere annullata.");
+  if (!ok) return;
+  try {
+    await api(`/simulations/${simulationId}`, { method: "DELETE" });
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+
+  const reviewBox = el("simulation-review");
+  if (reviewBox) reviewBox.innerHTML = "";
+
+  if (customSimulation.simulationId === simulationId) {
+    customSimulation.simulationId = null;
+    updateSimulationUrl();
+  }
+
+  await loadSimulationHistory();
+}
+
+function flagMenuMarkup(questionId) {
+  return `
+    <select class="flag-menu" data-flag-question="${questionId}" title="Azioni domanda" aria-label="Azioni domanda">
+      <option value="" selected disabled>⋯</option>
+      <option value="discard">🚩 Segnala / rimuovi domanda</option>
+    </select>
+  `;
+}
+
+function flagTrashButtonMarkup(questionId) {
+  return `<button type="button" class="btn-icon danger-ghost flag-trash-btn" data-flag-question="${questionId}" title="Rimuovi domanda" aria-label="Rimuovi domanda">🗑️</button>`;
+}
+
+async function flagQuestionAndRemove(questionId) {
+  const ok = window.confirm("Segnalare questa domanda? Verrà rimossa da questa sessione e non apparirà più in simulazioni o errori.");
+  if (!ok) return;
+  try {
+    await discardQuestion(questionId, true);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+
+  const idx = immersionSession.questions.findIndex((q) => q.id === questionId);
+  if (idx !== -1) {
+    immersionSession.questions.splice(idx, 1);
+    if (idx < immersionSession.index) immersionSession.index -= 1;
+    const total = immersionSession.questions.length;
+    immersionSession.index = total ? Math.min(immersionSession.index, total - 1) : 0;
+    customSimulation.index = immersionSession.index;
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+  }
+
+  immersionSession.wrongQuestions = immersionSession.wrongQuestions.filter((w) => w.question.id !== questionId);
+
+  updateWrongAnswersUI();
+  renderSimulationQuestion();
+  updateSimulationUrl();
+}
+
+function updateSimulationUrl() {
+  const url = new URL(window.location.href);
+  if (customSimulation.simulationId && immersionSession.questions.length) {
+    url.searchParams.set("sim", customSimulation.simulationId);
+    url.searchParams.set("question", String(immersionSession.index + 1));
+  } else {
+    url.searchParams.delete("sim");
+    url.searchParams.delete("question");
+  }
+  window.history.replaceState(null, "", url);
+}
+
+async function restoreSimulationFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const simId = params.get("sim");
+  if (!simId) return false;
+
+  try {
+    const sim = await api(`/simulations/${simId}`);
+    customSimulation.questions = sim.questions || [];
+    customSimulation.index = 0;
+    customSimulation.simulationId = sim.id;
+    immersionSession.questions = customSimulation.questions;
+    immersionSession.index = 0;
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+    immersionSession.correctCount = 0;
+    immersionSession.wrongCount = 0;
+    immersionSession.wrongQuestions = [];
+    simulationCorrectionCache.clear();
+
+    for (const q of immersionSession.questions) {
+      const attempt = q.attempt;
+      if (!attempt) continue;
+      if (attempt.is_correct) {
+        immersionSession.correctCount += 1;
+      } else {
+        immersionSession.wrongCount += 1;
+        const correctOptionId = effectiveCorrectOptionId(q.solution, null);
+        immersionSession.wrongQuestions.push({
+          question: q,
+          selectedOption: attempt.answer_payload?.selected_option || null,
+          correctOption: correctOptionId ? normalizeOptionId(correctOptionId) : null
+        });
+      }
+    }
+    updateWrongAnswersUI();
+
+    const total = immersionSession.questions.length;
+    if (!total) {
+      updateSimulationUrl();
+      return false;
+    }
+
+    let questionParam = Number.parseInt(params.get("question") || "1", 10);
+    if (!Number.isFinite(questionParam) || questionParam < 1) questionParam = 1;
+    const index = Math.min(Math.max(questionParam - 1, 0), total - 1);
+    immersionSession.index = index;
+    customSimulation.index = index;
+
+    renderSimulationQuestion();
+
+    const currentAttempt = immersionSession.questions[index]?.attempt;
+    if (currentAttempt) {
+      const q = immersionSession.questions[index];
+      immersionSession.answered = true;
+      immersionSession.selectedOptionId = currentAttempt.answer_payload?.selected_option || "";
+      if (q.question_type === "multiple_choice") {
+        const normalizedSelected = normalizeOptionId(immersionSession.selectedOptionId);
+        const correctOptionRaw = await getBestCorrectionOptionId(q);
+        const correctOption = correctOptionRaw ? normalizeOptionId(correctOptionRaw) : "";
+        const hasKnownCorrect = Boolean(correctOption);
+        await renderAnswerFeedback(q, {
+          normalizedSelected,
+          isShowSolution: false,
+          previouslyAnswered: true,
+          isCorrect: currentAttempt.is_correct,
+          hasKnownCorrect,
+          correctOption
+        });
+      }
+    }
+
+    if (typeof switchStudyTab === "function") switchStudyTab("sim");
+    updateSimulationUrl();
+    return true;
+  } catch (err) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("sim");
+    url.searchParams.delete("question");
+    window.history.replaceState(null, "", url);
+    return false;
+  }
 }
 
 function simulationNext() {
@@ -1151,6 +1453,7 @@ function simulationNext() {
   immersionSession.answered = false;
   immersionSession.selectedOptionId = "";
   renderSimulationQuestion();
+  updateSimulationUrl();
 }
 
 function simulationPrev() {
@@ -1160,6 +1463,7 @@ function simulationPrev() {
   immersionSession.answered = false;
   immersionSession.selectedOptionId = "";
   renderSimulationQuestion();
+  updateSimulationUrl();
 }
 
 function initStudyAccordion() {
@@ -1232,7 +1536,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Keep wrongQuestions for review — only clear on new simulation
     customSimulation.questions = [];
     customSimulation.index = 0;
+    customSimulation.simulationId = null;
     renderSimulationQuestion();
+    updateSimulationUrl();
     setInlineStatus(el("simulation-status"), "Sessione immersione chiusa.");
   });
   el("simulation-next").addEventListener("click", simulationNext);
@@ -1244,7 +1550,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   updateShuffleNewButton();
   updateStudyNavButtons();
   renderStudyQuestion(null);
-  renderSimulationQuestion();
+  const restored = await restoreSimulationFromUrl();
+  if (!restored) {
+    renderSimulationQuestion();
+  }
   await refreshReviewStats();
   await loadNextStudyQuestion(false);
 });

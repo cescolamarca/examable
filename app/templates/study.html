@@ -28,6 +28,7 @@
         <button id="tab-btn-prep" class="active" onclick="switchStudyTab('prep')">Revisione</button>
         <button id="tab-btn-sim" onclick="switchStudyTab('sim')">Simulazione</button>
         <button id="tab-btn-wrong" onclick="switchStudyTab('wrong')" class="hidden">Errori <span id="wrong-count-badge" class="pill counter">0</span></button>
+        <button id="tab-btn-history" onclick="switchStudyTab('history')">Cronologia simulazioni</button>
       </div>
 
       <!-- TAB: Revisione -->
@@ -77,13 +78,20 @@
             <label>Aperte <input id="sim-open-count" type="number" value="5" min="0" max="200" /></label>
             <label>Multi <input id="sim-multi-count" type="number" value="0" min="0" max="200" /></label>
           </div>
-          <select id="sim-document-id">
-            <option value="">Tutti i documenti</option>
+          <select id="sim-document-ids" multiple size="4" title="Tieni premuto Ctrl/Cmd per selezionare più documenti">
           </select>
-          <select id="sim-tag-preset">
-            <option value="">Nessun preset</option>
+          <select id="sim-tag-presets" multiple size="4" title="Tieni premuto Ctrl/Cmd per selezionare più preset">
           </select>
           <input id="sim-tag" type="text" class="visually-hidden" placeholder="tag" />
+          <select id="sim-priority-mode" title="Priorità domande">
+            <option value="none">Ordine standard</option>
+            <option value="never_viewed">Priorità: mai viste</option>
+            <option value="frequently_mistaken">Priorità: più sbagliate</option>
+          </select>
+          <label class="inline-check">
+            <input id="sim-randomize" type="checkbox" checked />
+            <span>Ordine casuale</span>
+          </label>
           <label class="inline-check">
             <input id="sim-only-reviewed-correct" type="checkbox" checked />
             <span>Solo corrette</span>
@@ -113,7 +121,10 @@
 
           <main class="immersion-main">
             <section class="immersion-question">
-              <span id="immersion-question-tag" class="immersion-chip">Simulazione</span>
+              <div class="immersion-question-head">
+                <span id="immersion-question-tag" class="immersion-chip">Simulazione</span>
+                <span id="immersion-question-flag"></span>
+              </div>
               <h2 id="immersion-question-text">
                 Genera una simulazione per iniziare la modalità full immersion.
               </h2>
@@ -167,6 +178,22 @@
           </div>
         </section>
       </div>
+
+      <!-- TAB: Cronologia simulazioni -->
+      <div id="tab-history" class="tab-pane">
+        <section class="card soft-white">
+          <span class="section-kicker">Cronologia</span>
+          <h2>Simulazioni generate</h2>
+          <p class="muted small">Rivedi le simulazioni generate in precedenza e le risposte date.</p>
+          <div id="simulation-history-list" class="stack-lg" style="margin-top:16px;"></div>
+          <div id="simulation-history-empty" class="empty-state hidden">
+            <div class="empty-icon">🗒️</div>
+            <h3>Nessuna simulazione</h3>
+            <p>Genera una simulazione dalla scheda "Simulazione" per vederla qui.</p>
+          </div>
+          <div id="simulation-review" class="stack-lg" style="margin-top:16px;"></div>
+        </section>
+      </div>
     </main>
 
     <script>
@@ -174,12 +201,18 @@
         document.getElementById('tab-prep').classList.remove('active');
         document.getElementById('tab-sim').classList.remove('active');
         document.getElementById('tab-wrong').classList.remove('active');
+        document.getElementById('tab-history').classList.remove('active');
         document.getElementById('tab-btn-prep').classList.remove('active');
         document.getElementById('tab-btn-sim').classList.remove('active');
         document.getElementById('tab-btn-wrong').classList.remove('active');
+        document.getElementById('tab-btn-history').classList.remove('active');
 
         document.getElementById('tab-' + tabId).classList.add('active');
         document.getElementById('tab-btn-' + tabId).classList.add('active');
+
+        if (tabId === 'history' && typeof loadSimulationHistory === 'function') {
+          loadSimulationHistory();
+        }
       }
     </script>
     <script src="/static/study.js"></script>
