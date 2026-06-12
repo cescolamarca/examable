@@ -15,6 +15,8 @@ from pypdf import PdfReader
 from app.schemas import QuestionOut, Quality, SourceLoc
 
 MCQ_START_RE = re.compile(r"^\s*(\d+)\.\s+(.*)$")
+MCQ_PAREN_RE = re.compile(r"^\s*(\d+)\)\s+(.*)$")
+DOMANDA_RE = re.compile(r"^\s*DOMANDA\s+(\d+)\s*$", re.IGNORECASE)
 OPTION_RE = re.compile(r"^\s*([a-d])\.\s+(.*)$", re.IGNORECASE)
 EXERCISE_RE = re.compile(r"^\s*ESERCIZIO\s+(\d+)", re.IGNORECASE)
 THEORY_RE = re.compile(r"^\s*DOMANDA\s+TEORIA", re.IGNORECASE)
@@ -41,7 +43,10 @@ def _quality_score(pages: list[str]) -> float:
     text = "\n".join(pages)
     compact = re.sub(r"\s+", "", text)
     marker_count = len(
-        re.findall(r"(?im)^\s*\d+\.\s|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+", text)
+        re.findall(
+            r"(?im)^\s*\d+\.\s|^\s*\d+\)\s|^\s*DOMANDA\s+\d+|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+",
+            text,
+        )
     )
     length_score = min(1.0, len(compact) / 7000.0)
     marker_score = min(1.0, marker_count / 10.0)
@@ -229,17 +234,67 @@ class ParseContext:
     page_end: int
 
 
-def parse_unisa_questions(document_id: UUID, pages: list[str]) -> list[QuestionOut]:
-    text = "\n".join(_clean_lines("\n".join(pages)))
+def _split_question_markers(text: str) -> str:
     text = text.replace("\t", " ")
+    text = re.sub(r"(?i)(?<!\n)\bDOMANDA\s+(\d+)\b", r"\nDOMANDA \1", text)
+    text = re.sub(r"(?<!\n)(\d{1,3}\)\s)", r"\n\1", text)
     text = re.sub(r"(?<!^)\s(\d{1,2}\.\s)", r"\n\1", text)
-    text = re.sub(r"(?<!^)\s([a-d]\.\s)", r"\n\1", text)
-    text = re.sub(r"[ ]{2,}", " ", text)
+    text = re.sub(r"(?<!^)\s([a-d]\.\s)", r"\n\1", text, flags=re.IGNORECASE)
+    return re.sub(r"[ ]{2,}", " ", text)
+
+
+def _resolve_number(section: str, preferred: int, used: dict[str, set[int]]) -> int:
+    taken = used.setdefault(section, set())
+    number = preferred
+    while number in taken:
+        number += 1
+    taken.add(number)
+    return number
+
+
+def _append_mcq(
+    questions: list[QuestionOut],
+    *,
+    document_id: UUID,
+    section: str,
+    q_number: int,
+    stem_lines: list[str],
+    options: list[dict[str, str]],
+    pages: list[str],
+) -> None:
+    stem = " ".join(stem_lines).strip()
+    warnings: list[str] = []
+    needs_review = False
+    confidence = 0.95
+    if len(options) < 2:
+        warnings.append("Insufficient options detected")
+        needs_review = True
+        confidence = 0.6
+
+    questions.append(
+        QuestionOut(
+            question_id=uuid4(),
+            document_id=document_id,
+            section=section,
+            number_in_section=q_number,
+            question_type="multiple_choice",
+            stem=stem,
+            options=options,
+            tags=_tag_question(stem),
+            source_loc=SourceLoc(page_start=1, page_end=len(pages)),
+            quality=Quality(confidence=confidence, needs_review=needs_review, warnings=warnings),
+        )
+    )
+
+
+def parse_unisa_questions(document_id: UUID, pages: list[str]) -> list[QuestionOut]:
+    text = _split_question_markers("\n".join(_clean_lines("\n".join(pages))))
     lines = text.splitlines()
 
     questions: list[QuestionOut] = []
     section = "quiz"
     counters = {"quiz": 0, "teoria": 0, "esercizio": 0}
+    used_numbers: dict[str, set[int]] = {"quiz": set(), "teoria": set(), "esercizio": set()}
 
     i = 0
     while i < len(lines):
@@ -307,49 +362,92 @@ def parse_unisa_questions(document_id: UUID, pages: list[str]) -> list[QuestionO
             )
             continue
 
+        domanda = DOMANDA_RE.match(line)
+        if domanda:
+            section = "quiz"
+            q_number = int(domanda.group(1))
+            i += 1
+            stem_lines: list[str] = []
+            options: list[dict[str, str]] = []
+            while i < len(lines):
+                if (
+                    DOMANDA_RE.match(lines[i])
+                    or MCQ_START_RE.match(lines[i])
+                    or MCQ_PAREN_RE.match(lines[i])
+                    or THEORY_RE.match(lines[i])
+                    or EXERCISE_RE.match(lines[i])
+                ):
+                    break
+                opt = OPTION_RE.match(lines[i])
+                if opt:
+                    options.append({"id": opt.group(1).lower(), "text": opt.group(2).strip()})
+                elif not options:
+                    stem_lines.append(lines[i].strip())
+                i += 1
+
+            counters["quiz"] = max(counters["quiz"] + 1, q_number)
+            _append_mcq(
+                questions,
+                document_id=document_id,
+                section="quiz",
+                q_number=_resolve_number("quiz", q_number, used_numbers),
+                stem_lines=stem_lines,
+                options=options,
+                pages=pages,
+            )
+            continue
+
         if section == "quiz":
-            mcq = MCQ_START_RE.match(line)
+            mcq = MCQ_START_RE.match(line) or MCQ_PAREN_RE.match(line)
             if mcq:
                 q_number = int(mcq.group(1))
                 stem_lines = [mcq.group(2).strip()]
                 i += 1
                 options = []
                 while i < len(lines):
-                    if MCQ_START_RE.match(lines[i]) or THEORY_RE.match(lines[i]) or EXERCISE_RE.match(lines[i]):
+                    if (
+                        MCQ_START_RE.match(lines[i])
+                        or MCQ_PAREN_RE.match(lines[i])
+                        or DOMANDA_RE.match(lines[i])
+                        or THEORY_RE.match(lines[i])
+                        or EXERCISE_RE.match(lines[i])
+                    ):
                         break
                     opt = OPTION_RE.match(lines[i])
                     if opt:
                         options.append({"id": opt.group(1).lower(), "text": opt.group(2).strip()})
                     else:
-                        # Continued question line.
                         if not options:
                             stem_lines.append(lines[i].strip())
                     i += 1
 
-                stem = " ".join(stem_lines).strip()
-                warnings = []
-                needs_review = False
-                confidence = 0.95
-                if len(options) < 2:
-                    warnings.append("Insufficient options detected")
-                    needs_review = True
-                    confidence = 0.6
-
                 counters["quiz"] = max(counters["quiz"] + 1, q_number)
-                questions.append(
-                    QuestionOut(
-                        question_id=uuid4(),
+                if len(options) >= 2:
+                    _append_mcq(
+                        questions,
                         document_id=document_id,
                         section="quiz",
-                        number_in_section=q_number,
-                        question_type="multiple_choice",
-                        stem=stem,
+                        q_number=_resolve_number("quiz", q_number, used_numbers),
+                        stem_lines=stem_lines,
                         options=options,
-                        tags=_tag_question(stem),
-                        source_loc=SourceLoc(page_start=1, page_end=len(pages)),
-                        quality=Quality(confidence=confidence, needs_review=needs_review, warnings=warnings),
+                        pages=pages,
                     )
-                )
+                else:
+                    stem = " ".join(stem_lines).strip()
+                    counters["teoria"] += 1
+                    questions.append(
+                        QuestionOut(
+                            question_id=uuid4(),
+                            document_id=document_id,
+                            section="teoria",
+                            number_in_section=_resolve_number("teoria", counters["teoria"], used_numbers),
+                            question_type="open_text",
+                            stem=stem,
+                            tags=_tag_question(stem),
+                            source_loc=SourceLoc(page_start=1, page_end=len(pages)),
+                            quality=Quality(confidence=0.75, needs_review=True),
+                        )
+                    )
                 continue
 
         i += 1

@@ -117,7 +117,6 @@ def _call_multimodal_llm(
 
     payload = {
         "model": settings.multimodal_model,
-        "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
             {
