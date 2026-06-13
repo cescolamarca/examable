@@ -1086,6 +1086,64 @@ async function generateCustomSimulation() {
   }
 }
 
+async function createSimulationFromWrong() {
+  const status = el("wrong-create-sim-status");
+  const showStatus = (msg, isError = false) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.classList.remove("hidden");
+    status.classList.toggle("error", isError);
+  };
+
+  // Snapshot the ids before loading the new simulation resets wrongQuestions.
+  const questionIds = immersionSession.wrongQuestions
+    .map((w) => w.question && w.question.id)
+    .filter(Boolean);
+  if (!questionIds.length) {
+    showStatus("Nessun errore da cui creare una simulazione.", true);
+    return;
+  }
+
+  let result;
+  try {
+    showStatus("Creazione simulazione dagli errori...");
+    const userId = await ensureDefaultUser();
+    result = await api("/simulations/from-questions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, question_ids: questionIds, randomize: false })
+    });
+  } catch (err) {
+    showStatus(err.message, true);
+    return;
+  }
+
+  customSimulation.questions = result.questions || [];
+  customSimulation.index = 0;
+  customSimulation.simulationId = result.simulation_id || null;
+  immersionSession.questions = customSimulation.questions;
+  immersionSession.index = 0;
+  immersionSession.answered = false;
+  immersionSession.selectedOptionId = "";
+  immersionSession.correctCount = 0;
+  immersionSession.wrongCount = 0;
+  immersionSession.wrongQuestions = [];
+  simulationCorrectionCache.clear();
+  updateWrongAnswersUI();
+
+  if (!customSimulation.questions.length) {
+    showStatus("Nessuna delle domande errate è più disponibile.", true);
+    renderSimulationQuestion();
+    return;
+  }
+
+  showStatus("");
+  if (status) status.classList.add("hidden");
+  renderSimulationQuestion();
+  updateSimulationUrl();
+  if (typeof switchStudyTab === "function") switchStudyTab("sim");
+}
+
 async function generateExhaustiveSimulation() {
   const status = el("simulation-status");
   try {
@@ -1141,12 +1199,14 @@ function updateWrongAnswersUI() {
   const badge = el("wrong-count-badge");
   const list = el("wrong-answers-list");
   const emptyState = el("wrong-answers-empty");
+  const createSimBtn = el("wrong-create-sim");
   const count = immersionSession.wrongQuestions.length;
 
   if (wrongBtn) {
     if (count > 0) wrongBtn.classList.remove("hidden");
     else wrongBtn.classList.add("hidden");
   }
+  if (createSimBtn) createSimBtn.classList.toggle("hidden", count === 0);
   if (badge) badge.textContent = String(count);
   if (!list) return;
 
@@ -1637,6 +1697,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   el("generate-simulation").addEventListener("click", generateCustomSimulation);
   el("generate-exhaustive").addEventListener("click", generateExhaustiveSimulation);
+  el("wrong-create-sim")?.addEventListener("click", createSimulationFromWrong);
   el("immersion-next")?.addEventListener("click", simulationNext);
   el("immersion-finish")?.addEventListener("click", () => {
     if (immersionSession.wrongQuestions.length > 0) {

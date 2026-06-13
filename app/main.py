@@ -39,6 +39,7 @@ from app.schemas import (
     QuestionCorrectionSetIn,
     QuestionReviewSetIn,
     QuestionTagSetIn,
+    SimulationFromQuestionsIn,
     TagCreateIn,
     UploadResponse,
 )
@@ -1609,6 +1610,62 @@ def create_custom_simulation(payload: CustomSimulationIn) -> dict:
         "shortage_by_type": shortage,
         "simulation_id": simulation_id,
         "questions": results,
+    }
+
+
+@app.post("/simulations/from-questions")
+def create_simulation_from_questions(payload: SimulationFromQuestionsIn) -> dict:
+    """Build a simulation from an explicit list of question ids (e.g. the wrong
+    answers of a previous run). Discarded questions are excluded; original order
+    is preserved unless randomize is set."""
+    import random as _random
+
+    # Dedupe while preserving the requested order.
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for qid in payload.question_ids:
+        s = str(qid)
+        if s not in seen:
+            seen.add(s)
+            ordered_ids.append(s)
+    if not ordered_ids:
+        raise HTTPException(status_code=400, detail="No question ids provided")
+
+    id_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for idx, qid in enumerate(ordered_ids):
+        key = f"qid_{idx}"
+        id_clauses.append(f":{key}")
+        params[key] = qid
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                _QUESTION_POOL_SELECT
+                + " WHERE q.id IN ("
+                + ", ".join(id_clauses)
+                + ") AND q.is_discarded = false"
+            ),
+            params,
+        ).mappings()
+        by_id = {str(row["id"]): _row_to_question_dict(row) for row in rows}
+
+    questions_out = [by_id[qid] for qid in ordered_ids if qid in by_id]
+    if not questions_out:
+        raise HTTPException(status_code=400, detail="None of the questions are available")
+    if payload.randomize:
+        _random.shuffle(questions_out)
+
+    sim_payload = CustomSimulationIn(user_id=payload.user_id, randomize=payload.randomize)
+    simulation_id = _persist_simulation(sim_payload, questions_out, requested_total=len(questions_out))
+
+    return {
+        "requested_total": len(ordered_ids),
+        "generated_total": len(questions_out),
+        "requested_by_type": {},
+        "shortage_by_type": {},
+        "simulation_id": simulation_id,
+        "questions": questions_out,
     }
 
 
