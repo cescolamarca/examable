@@ -80,10 +80,11 @@
             <p class="muted small" id="ai-gen-selected-hint">Seleziona un documento dalla tabella per generare per documento.</p>
             <div class="row">
               <button id="ai-gen-doc" disabled>Genera per documento</button>
+              <button id="ai-gen-doc-overwrite" class="secondary" disabled>Rigenera documento (sovrascrivi)</button>
               <button id="ai-gen-freq">Genera per frequenza</button>
               <button id="ai-gen-cancel" class="secondary" hidden>Annulla</button>
             </div>
-            <p class="muted small">Salta automaticamente le domande gia' corrette manualmente.</p>
+            <p class="muted small">"Genera per documento" salta le domande gia' corrette; "Rigenera (sovrascrivi)" rifa' con AI tutte le risposte del documento, anche quelle gia' commentate.</p>
             <div class="ai-gen-progress-track" hidden id="ai-gen-progress">
               <div class="immersion-progress-fill" id="ai-gen-progress-fill"></div>
             </div>
