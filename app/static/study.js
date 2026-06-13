@@ -1293,12 +1293,16 @@ async function loadSimulationHistory() {
           </div>
           <div class="muted small">${score}</div>
           <div class="row" style="margin-top:8px;">
+            <button type="button" class="primary" data-reopen-simulation="${sim.id}">▶️ Riprendi</button>
             <button type="button" class="secondary" data-review-simulation="${sim.id}">Rivedi</button>
             <button type="button" class="btn-icon danger-ghost" data-delete-simulation="${sim.id}" title="Elimina simulazione" aria-label="Elimina simulazione">🗑️</button>
           </div>
         </div>
       `;
     }).join("");
+    Array.from(list.querySelectorAll("[data-reopen-simulation]")).forEach((btn) => {
+      btn.addEventListener("click", () => reopenSimulation(btn.getAttribute("data-reopen-simulation")));
+    });
     Array.from(list.querySelectorAll("[data-review-simulation]")).forEach((btn) => {
       btn.addEventListener("click", () => reviewSimulation(btn.getAttribute("data-review-simulation")));
     });
@@ -1540,7 +1544,8 @@ function updateSimulationUrl() {
   window.history.replaceState(null, "", url);
 }
 
-async function restoreSimulationFromUrl() {
+async function restoreSimulationFromUrl(options = {}) {
+  const { resumeFromLastAnswered = false } = options;
   const params = new URLSearchParams(window.location.search);
   const simId = params.get("sim");
   if (!simId) return false;
@@ -1559,9 +1564,12 @@ async function restoreSimulationFromUrl() {
     immersionSession.wrongQuestions = [];
     simulationCorrectionCache.clear();
 
-    for (const q of immersionSession.questions) {
+    let lastAnsweredIndex = -1;
+    for (let i = 0; i < immersionSession.questions.length; i++) {
+      const q = immersionSession.questions[i];
       const attempt = q.attempt;
       if (!attempt) continue;
+      lastAnsweredIndex = i;
       if (attempt.is_correct) {
         immersionSession.correctCount += 1;
       } else {
@@ -1582,9 +1590,14 @@ async function restoreSimulationFromUrl() {
       return false;
     }
 
-    let questionParam = Number.parseInt(params.get("question") || "1", 10);
-    if (!Number.isFinite(questionParam) || questionParam < 1) questionParam = 1;
-    const index = Math.min(Math.max(questionParam - 1, 0), total - 1);
+    let index;
+    if (resumeFromLastAnswered) {
+      index = lastAnsweredIndex >= 0 ? lastAnsweredIndex : 0;
+    } else {
+      let questionParam = Number.parseInt(params.get("question") || "1", 10);
+      if (!Number.isFinite(questionParam) || questionParam < 1) questionParam = 1;
+      index = Math.min(Math.max(questionParam - 1, 0), total - 1);
+    }
     immersionSession.index = index;
     customSimulation.index = index;
 
@@ -1621,6 +1634,15 @@ async function restoreSimulationFromUrl() {
     window.history.replaceState(null, "", url);
     return false;
   }
+}
+
+async function reopenSimulation(simulationId) {
+  if (!simulationId) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("sim", simulationId);
+  url.searchParams.delete("question");
+  window.history.replaceState(null, "", url);
+  await restoreSimulationFromUrl({ resumeFromLastAnswered: true });
 }
 
 function simulationNext() {
