@@ -1641,7 +1641,12 @@ def get_simulation(simulation_id: UUID) -> dict:
                 id_clauses.append(f":{key}")
                 params[key] = qid
             rows = conn.execute(
-                text(_QUESTION_POOL_SELECT + " WHERE q.id IN (" + ", ".join(id_clauses) + ")"),
+                text(
+                    _QUESTION_POOL_SELECT
+                    + " WHERE q.id IN ("
+                    + ", ".join(id_clauses)
+                    + ") AND q.is_discarded = false"
+                ),
                 params,
             ).mappings()
             for row in rows:
