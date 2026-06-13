@@ -673,20 +673,22 @@ async function submitImmersionAttempt(questionId, isCorrect, answerPayload = {})
 
 async function getBestCorrectionOptionId(question) {
   const fromSolution = extractCorrectOptionId(question?.solution || {});
-  if (fromSolution) return fromSolution;
-  if (!question?.id) return "";
+  if (!question?.id) return fromSolution || "";
   if (simulationCorrectionCache.has(question.id)) {
     return simulationCorrectionCache.get(question.id) || "";
   }
+  // The user correction wins over the embedded solution (consistent with
+  // effectiveCorrectOptionId), so an on-the-fly edit survives a refresh.
+  let resolved = "";
   try {
     const correction = await loadQuestionCorrection(question.id);
-    const normalized = normalizeOptionId(correction?.correct_option_id || "");
-    simulationCorrectionCache.set(question.id, normalized || "");
-    return normalized || "";
+    resolved = normalizeOptionId(correction?.correct_option_id || "");
   } catch {
-    simulationCorrectionCache.set(question.id, "");
-    return "";
+    resolved = "";
   }
+  if (!resolved) resolved = fromSolution || "";
+  simulationCorrectionCache.set(question.id, resolved);
+  return resolved;
 }
 
 function renderImmersionBaseState() {
@@ -880,6 +882,8 @@ function renderSimulationQuestion() {
       flagSelect.addEventListener("change", async () => {
         if (flagSelect.value === "discard") {
           await flagQuestionAndRemove(q.id);
+        } else if (flagSelect.value === "edit-correct") {
+          await editCorrectAnswerInline(q.id);
         }
         flagSelect.value = "";
       });
@@ -1314,6 +1318,7 @@ function flagMenuMarkup(questionId) {
   return `
     <select class="flag-menu" data-flag-question="${questionId}" title="Azioni domanda" aria-label="Azioni domanda">
       <option value="" selected disabled>⋯</option>
+      <option value="edit-correct">✏️ Modifica risposta corretta</option>
       <option value="discard">🚩 Segnala / rimuovi domanda</option>
     </select>
   `;
@@ -1321,6 +1326,67 @@ function flagMenuMarkup(questionId) {
 
 function flagTrashButtonMarkup(questionId) {
   return `<button type="button" class="btn-icon danger-ghost flag-trash-btn" data-flag-question="${questionId}" title="Rimuovi domanda" aria-label="Rimuovi domanda">🗑️</button>`;
+}
+
+async function editCorrectAnswerInline(questionId) {
+  const q = immersionSession.questions.find((item) => item.id === questionId);
+  if (!q) return;
+  if (q.question_type !== "multiple_choice" || !Array.isArray(q.options) || !q.options.length) {
+    alert("La modifica della risposta corretta è disponibile solo per le domande a scelta multipla.");
+    return;
+  }
+
+  const optionsById = new Map();
+  for (const o of q.options) {
+    const normId = normalizeOptionId(o?.id);
+    if (normId) optionsById.set(normId, String(o?.id || "").trim());
+  }
+  const optionList = q.options
+    .map((o) => `${o?.id}) ${String(o?.text || "").trim()}`)
+    .join("\n");
+
+  const current = await getBestCorrectionOptionId(q);
+  const answer = window.prompt(
+    `Quale opzione è quella corretta?\n\n${optionList}\n\nInserisci la lettera dell'opzione corretta.`,
+    current ? current.toUpperCase() : ""
+  );
+  if (answer === null) return;
+
+  const normalized = normalizeOptionId(answer);
+  if (!normalized || !optionsById.has(normalized)) {
+    alert("Opzione non valida. Scegli una delle lettere disponibili.");
+    return;
+  }
+  const rawOptionId = optionsById.get(normalized) || normalized;
+
+  try {
+    await setQuestionCorrection(q.id, {
+      correct_option_id: rawOptionId,
+      explanation_text: null,
+      answer_payload: {
+        selected_option_raw: rawOptionId,
+        selected_option_normalized: normalized
+      }
+    });
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+
+  // Make the new key take effect immediately and survive a refresh.
+  simulationCorrectionCache.set(q.id, normalized);
+  const wrongEntry = immersionSession.wrongQuestions.find((w) => w.question.id === q.id);
+  if (wrongEntry) wrongEntry.correctOption = normalized;
+
+  // The current attempt was scored against the old key; reset so the user can
+  // re-answer against the corrected option (we don't retroactively rescore).
+  if (immersionSession.questions[immersionSession.index]?.id === q.id) {
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+  }
+
+  updateWrongAnswersUI();
+  renderSimulationQuestion();
 }
 
 async function flagQuestionAndRemove(questionId) {
@@ -1389,7 +1455,7 @@ async function restoreSimulationFromUrl() {
         immersionSession.correctCount += 1;
       } else {
         immersionSession.wrongCount += 1;
-        const correctOptionId = effectiveCorrectOptionId(q.solution, null);
+        const correctOptionId = await getBestCorrectionOptionId(q);
         immersionSession.wrongQuestions.push({
           question: q,
           selectedOption: attempt.answer_payload?.selected_option || null,
