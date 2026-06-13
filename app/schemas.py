@@ -93,6 +93,12 @@ class CustomSimulationIn(BaseModel):
     randomize: bool = True
 
 
+class SimulationFromQuestionsIn(BaseModel):
+    user_id: UUID
+    question_ids: list[UUID] = Field(default_factory=list)
+    randomize: bool = False
+
+
 class TagOut(BaseModel):
     id: UUID
     name: str
