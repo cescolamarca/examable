@@ -884,6 +884,8 @@ function renderSimulationQuestion() {
           await flagQuestionAndRemove(q.id);
         } else if (flagSelect.value === "edit-correct") {
           await editCorrectAnswerInline(q.id);
+        } else if (flagSelect.value === "regen-ai") {
+          await regenerateCorrectAnswerInline(q.id);
         }
         flagSelect.value = "";
       });
@@ -1319,6 +1321,7 @@ function flagMenuMarkup(questionId) {
     <select class="flag-menu" data-flag-question="${questionId}" title="Azioni domanda" aria-label="Azioni domanda">
       <option value="" selected disabled>⋯</option>
       <option value="edit-correct">✏️ Modifica risposta corretta</option>
+      <option value="regen-ai">🤖 Rigenera risposta (AI)</option>
       <option value="discard">🚩 Segnala / rimuovi domanda</option>
     </select>
   `;
@@ -1380,6 +1383,54 @@ async function editCorrectAnswerInline(questionId) {
 
   // The current attempt was scored against the old key; reset so the user can
   // re-answer against the corrected option (we don't retroactively rescore).
+  if (immersionSession.questions[immersionSession.index]?.id === q.id) {
+    immersionSession.answered = false;
+    immersionSession.selectedOptionId = "";
+  }
+
+  updateWrongAnswersUI();
+  renderSimulationQuestion();
+}
+
+async function regenerateCorrectAnswerInline(questionId) {
+  const q = immersionSession.questions.find((item) => item.id === questionId);
+  if (!q) return;
+  const ok = window.confirm("Rigenerare con AI la risposta corretta? Sovrascriverà la correzione attuale.");
+  if (!ok) return;
+
+  const feedback = el("immersion-feedback");
+  const feedbackTitle = el("immersion-feedback-title");
+  const feedbackBody = el("immersion-feedback-body");
+  const feedbackIcon = feedback ? feedback.querySelector(".immersion-feedback-icon") : null;
+  if (feedback) feedback.classList.remove("hidden", "error");
+  if (feedbackIcon) feedbackIcon.textContent = "🤖";
+  if (feedbackTitle) feedbackTitle.textContent = "Rigenerazione AI in corso…";
+  if (feedbackBody) {
+    feedbackBody.textContent = "Attendi qualche secondo.";
+    feedbackBody.style.whiteSpace = "pre-wrap";
+  }
+
+  let result;
+  try {
+    const userId = await ensureDefaultUser();
+    result = await api(`/questions/${questionId}/correction/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId })
+    });
+  } catch (err) {
+    alert(err.message);
+    renderSimulationQuestion();
+    return;
+  }
+
+  // The new correction wins over the embedded solution; refresh cache + wrong list.
+  const normalized = normalizeOptionId(result.correct_option_id || "");
+  simulationCorrectionCache.set(q.id, normalized);
+  const wrongEntry = immersionSession.wrongQuestions.find((w) => w.question.id === q.id);
+  if (wrongEntry) wrongEntry.correctOption = normalized || null;
+
+  // Reset the current question so the new key applies on the next answer.
   if (immersionSession.questions[immersionSession.index]?.id === q.id) {
     immersionSession.answered = false;
     immersionSession.selectedOptionId = "";

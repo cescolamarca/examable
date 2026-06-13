@@ -45,6 +45,7 @@ def serialize_job(row: dict) -> dict:
         "skipped_count": int(row["skipped_count"] or 0),
         "current_question_id": str(row["current_question_id"]) if row["current_question_id"] else None,
         "cancel_requested": bool(row["cancel_requested"]),
+        "overwrite": bool(row["overwrite"]),
         "model": row["model"],
         "batch_size": int(row["batch_size"] or 5),
         "error_message": row["error_message"],
@@ -55,51 +56,91 @@ def serialize_job(row: dict) -> dict:
 
 
 def count_pending_candidates(
-    conn: Any, *, user_id: str, mode: str, document_id: str | None, cap: int
+    conn: Any, *, user_id: str, mode: str, document_id: str | None, cap: int, overwrite: bool = False
 ) -> int:
-    sql = text(
-        """
-        SELECT COUNT(*) AS n
-        FROM questions q
-        LEFT JOIN question_corrections qc
-          ON qc.question_id = q.id AND qc.user_id = :user_id
-        WHERE q.is_discarded = false
-          AND (qc.correct_option_id IS NULL)
-          AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
-          AND COALESCE(qc.answer_payload, '{}'::jsonb) = '{}'::jsonb
-          AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
-        """
-    )
+    if overwrite:
+        # Overwrite mode regenerates every non-discarded question in scope,
+        # regardless of whether a correction already exists.
+        sql = text(
+            """
+            SELECT COUNT(*) AS n
+            FROM questions q
+            WHERE q.is_discarded = false
+              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+            """
+        )
+    else:
+        sql = text(
+            """
+            SELECT COUNT(*) AS n
+            FROM questions q
+            LEFT JOIN question_corrections qc
+              ON qc.question_id = q.id AND qc.user_id = :user_id
+            WHERE q.is_discarded = false
+              AND (qc.correct_option_id IS NULL)
+              AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
+              AND COALESCE(qc.answer_payload, '{}'::jsonb) = '{}'::jsonb
+              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+            """
+        )
     n = conn.execute(sql, {"user_id": user_id, "document_id": document_id}).scalar_one()
     return min(int(n or 0), max(0, int(cap)))
 
 
 def _fetch_batch(
-    conn: Any, *, user_id: str, mode: str, document_id: str | None, batch_size: int
+    conn: Any,
+    *,
+    user_id: str,
+    mode: str,
+    document_id: str | None,
+    batch_size: int,
+    overwrite: bool = False,
+    offset: int = 0,
 ) -> list[dict]:
     # Ordering: in frequency mode, occurrences_count DESC; else by section/number.
     if mode == "frequency":
         order_sql = "q.occurrences_count DESC, q.section, q.number_in_section, q.id"
     else:
         order_sql = "q.section, q.number_in_section, q.id"
-    sql = text(
-        f"""
-        SELECT q.id, q.question_type, q.stem, q.options_json, q.subparts_json
-        FROM questions q
-        LEFT JOIN question_corrections qc
-          ON qc.question_id = q.id AND qc.user_id = :user_id
-        WHERE q.is_discarded = false
-          AND (qc.correct_option_id IS NULL)
-          AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
-          AND COALESCE(qc.answer_payload, '{{}}'::jsonb) = '{{}}'::jsonb
-          AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
-        ORDER BY {order_sql}
-        LIMIT :batch_size
-        """
-    )
+    if overwrite:
+        # Overwrite mode walks every question in scope (corrected or not), so the
+        # uncorrected filter can't advance the loop. Paginate by a stable OFFSET
+        # over a deterministic ordering instead.
+        sql = text(
+            f"""
+            SELECT q.id, q.question_type, q.stem, q.options_json, q.subparts_json
+            FROM questions q
+            WHERE q.is_discarded = false
+              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+            ORDER BY {order_sql}
+            OFFSET :offset
+            LIMIT :batch_size
+            """
+        )
+    else:
+        sql = text(
+            f"""
+            SELECT q.id, q.question_type, q.stem, q.options_json, q.subparts_json
+            FROM questions q
+            LEFT JOIN question_corrections qc
+              ON qc.question_id = q.id AND qc.user_id = :user_id
+            WHERE q.is_discarded = false
+              AND (qc.correct_option_id IS NULL)
+              AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
+              AND COALESCE(qc.answer_payload, '{{}}'::jsonb) = '{{}}'::jsonb
+              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+            ORDER BY {order_sql}
+            LIMIT :batch_size
+            """
+        )
     rows = conn.execute(
         sql,
-        {"user_id": user_id, "document_id": document_id, "batch_size": batch_size},
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "batch_size": batch_size,
+            "offset": offset,
+        },
     ).mappings()
     out: list[dict] = []
     for r in rows:
@@ -232,14 +273,38 @@ def _append_failures(conn: Any, *, job_id: str, new_failures: list[dict]) -> Non
 
 
 def _save_correction(
-    conn: Any, *, user_id: str, question_id: str, correct_option_id: str | None, explanation_text: str | None
+    conn: Any,
+    *,
+    user_id: str,
+    question_id: str,
+    correct_option_id: str | None,
+    explanation_text: str | None,
+    overwrite: bool = False,
 ) -> bool:
     """Insert/update the correction. Returns True on success.
-    Uses COALESCE to never overwrite a non-empty existing value (defensive against
-    concurrent manual edits)."""
+    By default uses COALESCE to never overwrite a non-empty existing value (defensive
+    against concurrent manual edits). With overwrite=True the freshly generated values
+    replace the existing ones (answer_payload is left untouched)."""
     has_correction = bool(correct_option_id or (explanation_text or "").strip())
     if not has_correction:
         return False
+    if overwrite:
+        conflict_sql = """
+            ON CONFLICT (user_id, question_id) DO UPDATE SET
+              correct_option_id = EXCLUDED.correct_option_id,
+              explanation_text = EXCLUDED.explanation_text,
+              reviewed_at = now()
+        """
+    else:
+        conflict_sql = """
+            ON CONFLICT (user_id, question_id) DO UPDATE SET
+              correct_option_id = COALESCE(question_corrections.correct_option_id, EXCLUDED.correct_option_id),
+              explanation_text = COALESCE(
+                NULLIF(BTRIM(question_corrections.explanation_text), ''),
+                EXCLUDED.explanation_text
+              ),
+              reviewed_at = now()
+        """
     conn.execute(
         text(
             """
@@ -249,14 +314,8 @@ def _save_correction(
             VALUES (
               :user_id, :question_id, :correct_option_id, :explanation_text, '{}'::jsonb
             )
-            ON CONFLICT (user_id, question_id) DO UPDATE SET
-              correct_option_id = COALESCE(question_corrections.correct_option_id, EXCLUDED.correct_option_id),
-              explanation_text = COALESCE(
-                NULLIF(BTRIM(question_corrections.explanation_text), ''),
-                EXCLUDED.explanation_text
-              ),
-              reviewed_at = now()
             """
+            + conflict_sql
         ),
         {
             "user_id": user_id,
@@ -266,6 +325,79 @@ def _save_correction(
         },
     )
     return True
+
+
+async def regenerate_single(*, user_id: str, question_id: str) -> dict:
+    """Regenerate (overwrite) the AI correction for a single question, synchronously.
+
+    Used by the on-the-fly "rigenera risposta (AI)" action in the simulation. Returns
+    {"correct_option_id", "explanation_text", "saved"}. Raises on transport/parse
+    errors or when the question doesn't exist."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT id, question_type, stem, options_json, subparts_json
+                FROM questions
+                WHERE id = :id AND is_discarded = false
+                """
+            ),
+            {"id": question_id},
+        ).mappings().first()
+    if not row:
+        raise ValueError("Question not found")
+
+    opts = row["options_json"] if isinstance(row["options_json"], list) else []
+    subs = row["subparts_json"] if isinstance(row["subparts_json"], list) else []
+    q = {
+        "id": str(row["id"]),
+        "question_type": row["question_type"],
+        "stem": row["stem"] or "",
+        "options": [
+            {"id": str(o.get("id", "")).strip(), "text": str(o.get("text", "")).strip()}
+            for o in opts
+            if isinstance(o, dict)
+        ],
+        "subparts": [
+            {"id": str(s.get("id", "")).strip(), "prompt": str(s.get("prompt", "")).strip()}
+            for s in subs
+            if isinstance(s, dict)
+        ],
+    }
+
+    results, tid_to_qid = await _call_correction_llm([q])
+    item = None
+    for tid, qid in tid_to_qid.items():
+        if qid == q["id"]:
+            item = results.get(tid)
+            break
+    if not item:
+        raise ValueError("LLM did not return an answer for this question")
+
+    correct_option_id = item.get("correct_option_id")
+    explanation_text = item.get("explanation_text")
+    # Same guards as the batch worker: drop ids for non-MC and unknown options.
+    if q["question_type"] != "multiple_choice":
+        correct_option_id = None
+    if q["question_type"] == "multiple_choice" and correct_option_id:
+        known = {str(o.get("id", "")).strip().lower() for o in q["options"]}
+        if correct_option_id.lower() not in known:
+            correct_option_id = None
+
+    with engine.begin() as conn:
+        saved = _save_correction(
+            conn,
+            user_id=user_id,
+            question_id=q["id"],
+            correct_option_id=correct_option_id,
+            explanation_text=explanation_text,
+            overwrite=True,
+        )
+    return {
+        "correct_option_id": correct_option_id,
+        "explanation_text": explanation_text,
+        "saved": saved,
+    }
 
 
 def _read_cancel_flag(job_id: str) -> bool:
@@ -345,7 +477,7 @@ async def run_correction_job(job_id: UUID | str) -> None:
             row = conn.execute(
                 text(
                     """
-                    SELECT id, user_id, mode, document_id, batch_size, total_questions, status
+                    SELECT id, user_id, mode, document_id, batch_size, total_questions, status, overwrite
                     FROM correction_jobs
                     WHERE id = :id
                     """
@@ -361,6 +493,7 @@ async def run_correction_job(job_id: UUID | str) -> None:
         document_id = str(row["document_id"]) if row["document_id"] else None
         batch_size = max(1, int(row["batch_size"] or settings.correction_gen_batch_size))
         total_target = int(row["total_questions"] or 0)
+        overwrite = bool(row["overwrite"])
 
         _set_status(job_id_str, status="running", started=True)
 
@@ -390,6 +523,8 @@ async def run_correction_job(job_id: UUID | str) -> None:
                     mode=mode,
                     document_id=document_id,
                     batch_size=this_batch_size,
+                    overwrite=overwrite,
+                    offset=processed_now if overwrite else 0,
                 )
             if not batch:
                 _set_status(job_id_str, status="done", finished=True, current_question_id=None)
@@ -459,6 +594,7 @@ async def run_correction_job(job_id: UUID | str) -> None:
                             question_id=qid,
                             correct_option_id=correct_option_id,
                             explanation_text=explanation_text,
+                            overwrite=overwrite,
                         )
                     if ok:
                         saved += 1

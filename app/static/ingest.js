@@ -270,13 +270,12 @@ async function recomputeTags() {
 function updateGenDocButton() {
   const btn = el("ai-gen-doc");
   if (!btn) return;
+  const overwriteBtn = el("ai-gen-doc-overwrite");
   const hint = el("ai-gen-selected-hint");
   const jobRunning = currentJobId !== null;
-  if (jobRunning || !selectedDocumentId) {
-    btn.disabled = true;
-  } else {
-    btn.disabled = false;
-  }
+  const disabled = jobRunning || !selectedDocumentId;
+  btn.disabled = disabled;
+  if (overwriteBtn) overwriteBtn.disabled = disabled;
   if (hint) {
     hint.textContent = selectedDocumentId
       ? `Documento selezionato: ${selectedDocumentId}`
@@ -293,12 +292,14 @@ function renderJobUi(job) {
   const statusText = el("ai-gen-status-text");
   const cancelBtn = el("ai-gen-cancel");
   const docBtn = el("ai-gen-doc");
+  const overwriteBtn = el("ai-gen-doc-overwrite");
   const freqBtn = el("ai-gen-freq");
   if (!job) {
     progress.hidden = true;
     counters.hidden = true;
     cancelBtn.hidden = true;
     docBtn.disabled = !selectedDocumentId;
+    if (overwriteBtn) overwriteBtn.disabled = !selectedDocumentId;
     freqBtn.disabled = false;
     return;
   }
@@ -315,12 +316,14 @@ function renderJobUi(job) {
   } else {
     failed.hidden = true;
   }
-  const modeLabel = job.mode === "frequency" ? "frequenza" : "documento";
+  const modeLabel =
+    job.mode === "frequency" ? "frequenza" : job.overwrite ? "documento (sovrascrivi)" : "documento";
   statusText.textContent = `${job.status} - modalita': ${modeLabel}${
     job.model ? ` - modello: ${job.model}` : ""
   }`;
   cancelBtn.hidden = !isActive;
   docBtn.disabled = isActive || !selectedDocumentId;
+  if (overwriteBtn) overwriteBtn.disabled = isActive || !selectedDocumentId;
   freqBtn.disabled = isActive;
 }
 
@@ -395,7 +398,7 @@ function startPolling() {
   jobPollHandle = setInterval(pollJobOnce, 2000);
 }
 
-async function startCorrectionJob(mode) {
+async function startCorrectionJob(mode, { overwrite = false } = {}) {
   const out = el("ai-gen-result");
   if (!userId) {
     setResult(out, "Utente di default non disponibile", true);
@@ -409,6 +412,7 @@ async function startCorrectionJob(mode) {
     }
     body.document_id = selectedDocumentId;
   }
+  if (overwrite) body.overwrite = true;
   try {
     setResult(out, "Avvio generazione...");
     const job = await api("/corrections/jobs", {
@@ -476,6 +480,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   el("recompute-tags").addEventListener("click", recomputeTags);
   el("load-sim-report").addEventListener("click", loadSimulationReport);
   el("ai-gen-doc").addEventListener("click", () => startCorrectionJob("document"));
+  el("ai-gen-doc-overwrite").addEventListener("click", () => {
+    const ok = window.confirm(
+      "Rigenerare TUTTE le risposte di questo documento con AI? Sovrascrivera' anche quelle gia' commentate. L'azione non e' annullabile per le correzioni gia' fatte."
+    );
+    if (!ok) return;
+    startCorrectionJob("document", { overwrite: true });
+  });
   el("ai-gen-freq").addEventListener("click", () => startCorrectionJob("frequency"));
   el("ai-gen-cancel").addEventListener("click", cancelCorrectionJob);
   await loadDefaultUser();

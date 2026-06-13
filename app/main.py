@@ -17,6 +17,7 @@ from app.config import settings
 from app.correction_generation import (
     count_pending_candidates,
     mark_orphan_running_as_interrupted,
+    regenerate_single,
     schedule_job,
     serialize_job,
 )
@@ -34,6 +35,7 @@ from app.schemas import (
     CustomSimulationIn,
     NextQuestionResponse,
     ParseResponse,
+    QuestionCorrectionRegenerateIn,
     QuestionCorrectionSetIn,
     QuestionReviewSetIn,
     QuestionTagSetIn,
@@ -878,13 +880,56 @@ def set_question_correction(question_id: UUID, payload: QuestionCorrectionSetIn)
     }
 
 
+@app.post("/questions/{question_id}/correction/regenerate")
+async def regenerate_question_correction(
+    question_id: UUID, payload: QuestionCorrectionRegenerateIn
+) -> dict:
+    if not settings.correction_gen_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Correction generation is disabled (CORRECTION_GEN_ENABLED=false)",
+        )
+    if not settings.multimodal_api_key:
+        raise HTTPException(status_code=400, detail="Missing MULTIMODAL_API_KEY; set it in the environment")
+
+    user_id_str = str(payload.user_id)
+    with engine.begin() as conn:
+        user_exists = conn.execute(
+            text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id_str}
+        ).first()
+        if not user_exists:
+            raise HTTPException(status_code=404, detail="user not found")
+
+    try:
+        result = await regenerate_single(user_id=user_id_str, question_id=str(question_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI regeneration failed: {exc}") from exc
+
+    if not result.get("saved"):
+        raise HTTPException(
+            status_code=502,
+            detail="L'AI non ha prodotto una risposta utilizzabile per questa domanda.",
+        )
+
+    return {
+        "question_id": str(question_id),
+        "user_id": user_id_str,
+        "correct_option_id": result.get("correct_option_id"),
+        "explanation_text": result.get("explanation_text"),
+        "answer_payload": {},
+        "has_correction": True,
+    }
+
+
 def _fetch_correction_job(conn, job_id: str) -> dict | None:
     row = conn.execute(
         text(
             """
             SELECT id, user_id, mode, document_id, status, total_questions,
                    processed_count, succeeded_count, failed_count, skipped_count,
-                   current_question_id, cancel_requested, model, batch_size,
+                   current_question_id, cancel_requested, overwrite, model, batch_size,
                    error_message, started_at, finished_at, created_at
             FROM correction_jobs
             WHERE id = :id
@@ -901,10 +946,13 @@ def _fetch_correction_job(conn, job_id: str) -> dict | None:
 async def start_correction_job(payload: CorrectionJobStartIn) -> CorrectionJobOut:
     mode = payload.mode
     document_id = str(payload.document_id) if payload.document_id else None
+    overwrite = bool(payload.overwrite)
     if mode == "document" and not document_id:
         raise HTTPException(status_code=400, detail="document_id required when mode='document'")
     if mode == "frequency" and document_id:
         raise HTTPException(status_code=400, detail="document_id must be null when mode='frequency'")
+    if overwrite and mode != "document":
+        raise HTTPException(status_code=400, detail="overwrite is only supported with mode='document'")
 
     if not settings.correction_gen_enabled:
         raise HTTPException(status_code=400, detail="Correction generation is disabled (CORRECTION_GEN_ENABLED=false)")
@@ -930,7 +978,7 @@ async def start_correction_job(payload: CorrectionJobStartIn) -> CorrectionJobOu
                 raise HTTPException(status_code=404, detail="document not found")
 
         total = count_pending_candidates(
-            conn, user_id=user_id_str, mode=mode, document_id=document_id, cap=cap
+            conn, user_id=user_id_str, mode=mode, document_id=document_id, cap=cap, overwrite=overwrite
         )
         if total == 0:
             raise HTTPException(
@@ -943,14 +991,14 @@ async def start_correction_job(payload: CorrectionJobStartIn) -> CorrectionJobOu
                 text(
                     """
                     INSERT INTO correction_jobs (
-                      user_id, mode, document_id, status, total_questions, model, batch_size
+                      user_id, mode, document_id, status, total_questions, model, batch_size, overwrite
                     )
                     VALUES (
-                      :user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size
+                      :user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size, :overwrite
                     )
                     RETURNING id, user_id, mode, document_id, status, total_questions,
                               processed_count, succeeded_count, failed_count, skipped_count,
-                              current_question_id, cancel_requested, model, batch_size,
+                              current_question_id, cancel_requested, overwrite, model, batch_size,
                               error_message, started_at, finished_at, created_at
                     """
                 ),
@@ -961,6 +1009,7 @@ async def start_correction_job(payload: CorrectionJobStartIn) -> CorrectionJobOu
                     "total": total,
                     "model": model,
                     "batch_size": batch_size,
+                    "overwrite": overwrite,
                 },
             ).mappings().first()
         except Exception as exc:  # noqa: BLE001 — likely the partial unique index
@@ -995,7 +1044,7 @@ def get_current_correction_job(response: Response) -> CorrectionJobOut | None:
                 """
                 SELECT id, user_id, mode, document_id, status, total_questions,
                        processed_count, succeeded_count, failed_count, skipped_count,
-                       current_question_id, cancel_requested, model, batch_size,
+                       current_question_id, cancel_requested, overwrite, model, batch_size,
                        error_message, started_at, finished_at, created_at
                 FROM correction_jobs
                 WHERE status IN ('queued','running')
@@ -1018,7 +1067,7 @@ def list_recent_correction_jobs(limit: int = 20) -> list[CorrectionJobOut]:
                 """
                 SELECT id, user_id, mode, document_id, status, total_questions,
                        processed_count, succeeded_count, failed_count, skipped_count,
-                       current_question_id, cancel_requested, model, batch_size,
+                       current_question_id, cancel_requested, overwrite, model, batch_size,
                        error_message, started_at, finished_at, created_at
                 FROM correction_jobs
                 ORDER BY created_at DESC
@@ -1050,7 +1099,7 @@ def cancel_correction_job(job_id: UUID) -> CorrectionJobOut:
                 WHERE id = :id AND status IN ('queued','running')
                 RETURNING id, user_id, mode, document_id, status, total_questions,
                           processed_count, succeeded_count, failed_count, skipped_count,
-                          current_question_id, cancel_requested, model, batch_size,
+                          current_question_id, cancel_requested, overwrite, model, batch_size,
                           error_message, started_at, finished_at, created_at
                 """
             ),

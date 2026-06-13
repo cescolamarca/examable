@@ -130,6 +130,10 @@ class QuestionCorrectionSetIn(BaseModel):
     answer_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class QuestionCorrectionRegenerateIn(BaseModel):
+    user_id: UUID
+
+
 class AdminDeleteDocumentsIn(BaseModel):
     document_ids: list[UUID]
 
@@ -138,6 +142,7 @@ class CorrectionJobStartIn(BaseModel):
     user_id: UUID
     mode: Literal["document", "frequency"]
     document_id: UUID | None = None
+    overwrite: bool = False
 
 
 class CorrectionJobOut(BaseModel):
@@ -153,6 +158,7 @@ class CorrectionJobOut(BaseModel):
     skipped_count: int
     current_question_id: UUID | None = None
     cancel_requested: bool
+    overwrite: bool = False
     model: str
     batch_size: int
     error_message: str | None = None

@@ -224,6 +224,7 @@ def ensure_runtime_schema() -> None:
                   current_question_id UUID,
                   failures_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                   cancel_requested BOOLEAN NOT NULL DEFAULT false,
+                  overwrite BOOLEAN NOT NULL DEFAULT false,
                   model VARCHAR(100) NOT NULL,
                   batch_size INTEGER NOT NULL DEFAULT 5,
                   error_message TEXT,
@@ -264,6 +265,24 @@ def ensure_runtime_schema() -> None:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_correction_jobs_one_running
                 ON correction_jobs ((1)) WHERE status IN ('queued','running')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'correction_jobs'
+                  ) THEN
+                    ALTER TABLE correction_jobs
+                    ADD COLUMN IF NOT EXISTS overwrite BOOLEAN NOT NULL DEFAULT false;
+                  END IF;
+                END
+                $$;
                 """
             )
         )
