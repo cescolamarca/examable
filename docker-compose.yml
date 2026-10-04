@@ -1,7 +1,6 @@
 services:
   db:
     image: postgres:16
-    container_name: examable_db
     environment:
       POSTGRES_DB: examable
       POSTGRES_USER: examable
@@ -9,44 +8,30 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./sql/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
       - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    container_name: examable_redis
-    ports:
-      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U examable -d examable"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api:
-    image: python:3.12-slim
-    container_name: examable_api
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command: /bin/sh -c "pip install -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    build: .
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://examable:examable@db:5432/examable
-      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /data/uploads
+      PORT: "8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
-
-  worker:
-    image: python:3.12-slim
-    container_name: examable_worker
-    working_dir: /app
     volumes:
-      - ./:/app
-    command: /bin/sh -c "pip install -r requirements.txt && celery -A worker.worker worker --loglevel=INFO"
-    environment:
-      DATABASE_URL: postgresql+psycopg://examable:examable@db:5432/examable
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      - db
-      - redis
+      - uploads:/data/uploads
 
 volumes:
   pgdata:
+  uploads:

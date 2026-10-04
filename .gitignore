@@ -3,12 +3,13 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 .Python
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Virtualenv
 .venv*/
@@ -20,10 +21,7 @@ ingest_runs/
 simulation_runs/
 *.log
 
-# Large local exports / reports (keep out of git)
-*.json
-*.txt
-!*requirements*.json
-
-# If you want to version specific exports, remove the patterns above.
-
+# Large local exports and reports produced by scripts/ (kept out of git)
+/*.json
+/*.txt
+!/requirements*.txt
