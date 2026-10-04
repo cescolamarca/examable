@@ -45,18 +45,22 @@ def get_question(question_id: UUID) -> dict:
 def discard_question(question_id: UUID, discarded: bool = True) -> dict:
     """Hide (or restore) a badly extracted question everywhere."""
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 UPDATE questions
                 SET is_discarded = :discarded,
                     discarded_at = CASE WHEN :discarded THEN now() ELSE NULL END
                 WHERE id = :question_id
                 RETURNING id, is_discarded, discarded_at
                 """
-            ),
-            {"question_id": str(question_id), "discarded": discarded},
-        ).mappings().first()
+                ),
+                {"question_id": str(question_id), "discarded": discarded},
+            )
+            .mappings()
+            .first()
+        )
     if not row:
         raise NotFoundError("Question not found")
     return {
@@ -69,16 +73,20 @@ def discard_question(question_id: UUID, discarded: bool = True) -> dict:
 @router.get("/{question_id}/review")
 def get_question_review(question_id: UUID, user_id: UUID) -> dict:
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 SELECT status, first_seen_at, reviewed_at
                 FROM question_reviews
                 WHERE question_id = :question_id AND user_id = :user_id
                 """
-            ),
-            {"question_id": str(question_id), "user_id": str(user_id)},
-        ).mappings().first()
+                ),
+                {"question_id": str(question_id), "user_id": str(user_id)},
+            )
+            .mappings()
+            .first()
+        )
     return {
         "question_id": str(question_id),
         "user_id": str(user_id),
@@ -92,18 +100,22 @@ def get_question_review(question_id: UUID, user_id: UUID) -> dict:
 def set_question_review(question_id: UUID, payload: QuestionReviewSetIn) -> dict:
     with engine.begin() as conn:
         _require_question(conn, question_id)
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 INSERT INTO question_reviews (user_id, question_id, status)
                 VALUES (:user_id, :question_id, :status)
                 ON CONFLICT (user_id, question_id)
                 DO UPDATE SET status = EXCLUDED.status, reviewed_at = now()
                 RETURNING status, first_seen_at, reviewed_at
                 """
-            ),
-            {"user_id": str(payload.user_id), "question_id": str(question_id), "status": payload.status},
-        ).mappings().one()
+                ),
+                {"user_id": str(payload.user_id), "question_id": str(question_id), "status": payload.status},
+            )
+            .mappings()
+            .one()
+        )
     return {
         "question_id": str(question_id),
         "user_id": str(payload.user_id),
@@ -132,16 +144,20 @@ def _correction_payload(question_id: UUID, user_id: UUID, row: Any) -> dict:
 @router.get("/{question_id}/correction")
 def get_question_correction(question_id: UUID, user_id: UUID) -> dict:
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 SELECT correct_option_id, explanation_text, answer_payload, first_seen_at, reviewed_at
                 FROM question_corrections
                 WHERE question_id = :question_id AND user_id = :user_id
                 """
-            ),
-            {"question_id": str(question_id), "user_id": str(user_id)},
-        ).mappings().first()
+                ),
+                {"question_id": str(question_id), "user_id": str(user_id)},
+            )
+            .mappings()
+            .first()
+        )
     return _correction_payload(question_id, user_id, row)
 
 
@@ -156,11 +172,14 @@ def set_question_correction(question_id: UUID, payload: QuestionCorrectionSetIn)
 
     with engine.begin() as conn:
         _require_question(conn, question_id)
-        row = conn.execute(
-            text(
-                """
-                INSERT INTO question_corrections (user_id, question_id, correct_option_id, explanation_text, answer_payload)
-                VALUES (:user_id, :question_id, :correct_option_id, :explanation_text, CAST(:answer_payload AS JSONB))
+        row = (
+            conn.execute(
+                text(
+                    """
+                INSERT INTO question_corrections
+                  (user_id, question_id, correct_option_id, explanation_text, answer_payload)
+                VALUES
+                  (:user_id, :question_id, :correct_option_id, :explanation_text, CAST(:answer_payload AS JSONB))
                 ON CONFLICT (user_id, question_id) DO UPDATE SET
                   correct_option_id = COALESCE(EXCLUDED.correct_option_id, question_corrections.correct_option_id),
                   explanation_text = COALESCE(EXCLUDED.explanation_text, question_corrections.explanation_text),
@@ -171,15 +190,18 @@ def set_question_correction(question_id: UUID, payload: QuestionCorrectionSetIn)
                   reviewed_at = now()
                 RETURNING correct_option_id, explanation_text, answer_payload, first_seen_at, reviewed_at
                 """
-            ),
-            {
-                "user_id": str(payload.user_id),
-                "question_id": str(question_id),
-                "correct_option_id": correct_option_id,
-                "explanation_text": explanation,
-                "answer_payload": json.dumps(answer_payload, ensure_ascii=False),
-            },
-        ).mappings().one()
+                ),
+                {
+                    "user_id": str(payload.user_id),
+                    "question_id": str(question_id),
+                    "correct_option_id": correct_option_id,
+                    "explanation_text": explanation,
+                    "answer_payload": json.dumps(answer_payload, ensure_ascii=False),
+                },
+            )
+            .mappings()
+            .one()
+        )
     return _correction_payload(question_id, payload.user_id, row)
 
 

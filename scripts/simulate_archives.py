@@ -3,18 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
-import zipfile
-from datetime import datetime, timezone
-from pathlib import Path
 import sys
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.services.multimodal import enhance_with_multimodal
 from app.services.extraction import extract_text_pages_with_fallback
+from app.services.multimodal import enhance_with_multimodal
 from app.services.parser import parse_unisa_questions
 
 
@@ -62,7 +62,7 @@ def _process_one_pdf_worker(pdf_path_str: str, result_queue: mp.Queue) -> None:
                 "multimodal_warnings": enhanced.warnings,
             }
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result_queue.put({"pdf": str(pdf_path), "error": str(exc)})
 
 
@@ -94,15 +94,13 @@ def run_simulation(pdfs: list[Path], checkpoint_path: Path | None = None) -> dic
 
     processed = [i for i in items if "error" not in i]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "total_pdfs": len(pdfs),
         "processed_ok": len(processed),
         "processed_failed": len(pdfs) - len(processed),
         "multimodal_used_count": sum(1 for i in processed if i["multimodal_used"]),
         "avg_extraction_quality": (
-            round(sum(i["extraction_quality"] for i in processed) / len(processed), 4)
-            if processed
-            else 0.0
+            round(sum(i["extraction_quality"] for i in processed) / len(processed), 4) if processed else 0.0
         ),
         "items": items,
     }

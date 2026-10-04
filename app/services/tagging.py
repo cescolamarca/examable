@@ -182,9 +182,7 @@ INTERCORSO_1_BANK_TITLE = "Intercorso 1 - banca postprocessed"
 
 MODULE_2_PRESET_SLUG = "modulo-2"
 MODULE_2_PRESET_NAME = "Modulo 2"
-MODULE_2_PRESET_DESCRIPTION = (
-    "Domande dal secondo intercorso e dai temi d'esame passati (esame_*/traccia_*)."
-)
+MODULE_2_PRESET_DESCRIPTION = "Domande dal secondo intercorso e dai temi d'esame passati (esame_*/traccia_*)."
 MODULE_2_DOC_TITLE_SQL = r"^(esame|traccia)_.*\.pdf$"
 
 

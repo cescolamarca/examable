@@ -36,9 +36,7 @@ def upload_document(file: UploadFile = File(...)) -> UploadResponse:
     return ingestion.store_upload(file.filename or "", file.file)
 
 
-@router.post(
-    "/documents/{document_id}/process", response_model=ParseResponse, dependencies=[Depends(require_admin)]
-)
+@router.post("/documents/{document_id}/process", response_model=ParseResponse, dependencies=[Depends(require_admin)])
 def process_document(document_id: UUID) -> ParseResponse:
     return ingestion.process_document(document_id)
 
@@ -72,16 +70,20 @@ def list_document_questions(
 @router.get("/stats/kpi")
 def get_kpis() -> dict:
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 SELECT
                   (SELECT COUNT(*) FROM documents) AS total_documents,
                   (SELECT COUNT(*) FROM documents WHERE ingestion_status = 'processed') AS processed_documents,
                   (SELECT AVG(confidence) FROM questions WHERE is_discarded = false) AS avg_quality
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     return {
         "total_documents": int(row["total_documents"]),
         "processed_documents": int(row["processed_documents"]),

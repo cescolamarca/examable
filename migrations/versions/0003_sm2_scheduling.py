@@ -22,9 +22,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("ALTER TABLE schedule_state ADD COLUMN IF NOT EXISTS ease_factor NUMERIC(4,2) NOT NULL DEFAULT 2.50")
-    op.execute(
-        "ALTER TABLE schedule_state ADD COLUMN IF NOT EXISTS interval_days NUMERIC(8,2) NOT NULL DEFAULT 0"
-    )
+    op.execute("ALTER TABLE schedule_state ADD COLUMN IF NOT EXISTS interval_days NUMERIC(8,2) NOT NULL DEFAULT 0")
     op.execute(
         """
         UPDATE schedule_state

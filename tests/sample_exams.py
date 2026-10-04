@@ -7,9 +7,12 @@ case the deduplication fingerprint has to collapse.
 
 from __future__ import annotations
 
+import subprocess
+import tempfile
 from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 HEADER = [
@@ -92,3 +95,23 @@ def write_sample_exams(directory: Path) -> tuple[Path, Path]:
         write_pdf(directory / "esame_2024_06_A.pdf", SESSION_A),
         write_pdf(directory / "esame_2024_09_B.pdf", SESSION_B),
     )
+
+
+def write_scanned_pdf(path: Path, lines: list[str]) -> Path:
+    """An image-only PDF, like a scanned exam: render the text PDF and embed the bitmap.
+
+    Requires `pdftoppm` (poppler-utils).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        text_pdf = write_pdf(Path(tmp) / "text.pdf", lines)
+        image_base = Path(tmp) / "page"
+        subprocess.run(
+            ["pdftoppm", "-r", "200", "-png", "-singlefile", str(text_pdf), str(image_base)],
+            check=True,
+            capture_output=True,
+        )
+        pdf = canvas.Canvas(str(path), pagesize=A4)
+        width, height = A4
+        pdf.drawImage(ImageReader(str(image_base.with_suffix(".png"))), 0, 0, width=width, height=height)
+        pdf.save()
+    return path

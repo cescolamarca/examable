@@ -4,7 +4,7 @@ from app.services import filters
 
 
 def test_parse_tag_values_splits_dedupes_and_unquotes() -> None:
-    assert filters.parse_tag_values(' reti, "tcp-ip" ,\nrouting, reti, , \'\' ') == ["reti", "tcp-ip", "routing"]
+    assert filters.parse_tag_values(" reti, \"tcp-ip\" ,\nrouting, reti, , '' ") == ["reti", "tcp-ip", "routing"]
     assert filters.parse_tag_values(None) == []
     assert len(filters.parse_tag_values(",".join(str(i) for i in range(100)))) == 30
 

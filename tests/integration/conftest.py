@@ -37,14 +37,18 @@ def _clean_tables(client: TestClient) -> Iterator[None]:
     from app.services.tagging import seed_tags_and_presets
 
     with engine.begin() as conn:
-        tables = conn.execute(
-            text(
-                """
+        tables = (
+            conn.execute(
+                text(
+                    """
                 SELECT tablename FROM pg_tables
                 WHERE schemaname = 'public' AND tablename <> 'alembic_version'
                 """
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if tables:
             conn.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))
         seed_tags_and_presets(conn)

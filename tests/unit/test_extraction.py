@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -83,3 +85,19 @@ def test_low_quality_everywhere_is_flagged(monkeypatch: pytest.MonkeyPatch, tmp_
     result = extraction.extract_text_pages_with_fallback(tmp_path / "x.pdf")
     assert result.method == "pypdf"
     assert "manual review recommended" in result.warnings[-1]
+
+
+@pytest.mark.skipif(
+    not (shutil.which("pdftoppm") and shutil.which("tesseract")), reason="needs poppler-utils and tesseract"
+)
+def test_scanned_pdf_falls_back_to_ocr(tmp_path: Path) -> None:
+    from app.services.parser import parse_unisa_questions
+    from tests.sample_exams import write_scanned_pdf
+
+    pdf = write_scanned_pdf(tmp_path / "scan.pdf", SESSION_A)
+    result = extraction.extract_text_pages_with_fallback(pdf)
+
+    assert result.method == "ocr"
+    assert result.quality_score >= ACCEPTABLE_QUALITY
+    questions = parse_unisa_questions(uuid4(), result.pages)
+    assert sum(q.question_type == "multiple_choice" for q in questions) == 3

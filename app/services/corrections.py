@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -64,7 +65,7 @@ def serialize_job(row: dict) -> dict:
         "error_message": row["error_message"],
         "started_at": _now_iso(row["started_at"]),
         "finished_at": _now_iso(row["finished_at"]),
-        "created_at": _now_iso(row["created_at"]) or datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": _now_iso(row["created_at"]) or datetime.now(tz=UTC).isoformat(),
     }
 
 
@@ -185,12 +186,12 @@ SYSTEM_PROMPT = (
     "se di tipo \"multiple_choice\", indicare l'id dell'opzione corretta (campo "
     "correct_option_id) e scrivere una spiegazione concisa (max 3 frasi) che giustifichi "
     "perche' quella opzione e' giusta e le altre no; "
-    "se di tipo \"open_text\", scrivere una risposta modello sintetica (max 6 frasi); "
-    "se di tipo \"multi_part_open\", scrivere una risposta modello che copra ognuno dei "
+    'se di tipo "open_text", scrivere una risposta modello sintetica (max 6 frasi); '
+    'se di tipo "multi_part_open", scrivere una risposta modello che copra ognuno dei '
     "sottopunti, identificandoli per id. "
     "Rispondi SOLO con JSON valido nel formato richiesto. Non inventare informazioni che "
     "non sono inferibili dalla domanda. Se non riesci a determinare la risposta, imposta "
-    "explanation a \"Impossibile determinare la risposta con le informazioni fornite.\" "
+    'explanation a "Impossibile determinare la risposta con le informazioni fornite." '
     "e ometti correct_option_id."
 )
 
@@ -218,8 +219,7 @@ def _build_user_content(batch: list[dict]) -> tuple[str, dict[str, str]]:
         '{"tid":"q2","explanation":"..."}]}\n'
         "Includi correct_option_id SOLO per le domande di tipo multiple_choice. "
         "Mantieni l'id opzione esattamente come ricevuto (es. 'a', 'b').\n\n"
-        "DOMANDE:\n"
-        + json.dumps({"items": items_payload}, ensure_ascii=False)
+        "DOMANDE:\n" + json.dumps({"items": items_payload}, ensure_ascii=False)
     )
     return user_text, tid_to_qid
 
@@ -347,16 +347,20 @@ async def regenerate_single(*, user_id: str, question_id: str) -> dict:
     {"correct_option_id", "explanation_text", "saved"}. Raises on transport/parse
     errors or when the question doesn't exist."""
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 SELECT id, question_type, stem, options_json, subparts_json
                 FROM questions
                 WHERE id = :id AND is_discarded = false
                 """
-            ),
-            {"id": question_id},
-        ).mappings().first()
+                ),
+                {"id": question_id},
+            )
+            .mappings()
+            .first()
+        )
     if not row:
         raise ValueError("Question not found")
 
@@ -429,7 +433,7 @@ def _set_status(
     error_message: str | None = None,
     started: bool = False,
     finished: bool = False,
-    current_question_id: str | None | object = ...,
+    current_question_id: str | object | None = ...,
 ) -> None:
     sets: list[str] = []
     params: dict[str, Any] = {"id": job_id}
@@ -487,16 +491,20 @@ async def run_correction_job(job_id: UUID | str) -> None:
     try:
         # Load job header.
         with engine.begin() as conn:
-            row = conn.execute(
-                text(
-                    """
+            row = (
+                conn.execute(
+                    text(
+                        """
                     SELECT id, user_id, mode, document_id, batch_size, total_questions, status, overwrite
                     FROM correction_jobs
                     WHERE id = :id
                     """
-                ),
-                {"id": job_id_str},
-            ).mappings().first()
+                    ),
+                    {"id": job_id_str},
+                )
+                .mappings()
+                .first()
+            )
         if not row:
             logger.warning("correction_jobs row %s vanished before worker start", job_id_str)
             return
@@ -549,7 +557,7 @@ async def run_correction_job(job_id: UUID | str) -> None:
             # Call the LLM. Failure of the whole call marks all items in batch as failed.
             try:
                 results, tid_to_qid = await _call_correction_llm(batch)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("Correction job %s: batch LLM call failed", job_id_str)
                 err_text = str(exc) or type(exc).__name__
                 failures = [
@@ -619,7 +627,7 @@ async def run_correction_job(job_id: UUID | str) -> None:
                                 "stem_preview": (q["stem"] or "")[:180],
                             }
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Correction job %s: save failed for %s", job_id_str, qid)
                     new_failures.append(
                         {
@@ -643,14 +651,12 @@ async def run_correction_job(job_id: UUID | str) -> None:
 
     except asyncio.CancelledError:
         logger.info("Correction job %s task cancelled", job_id_str)
-        try:
+        with contextlib.suppress(Exception):
             _set_status(job_id_str, status="cancelled", finished=True, current_question_id=None)
-        except Exception:  # noqa: BLE001
-            pass
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Correction job %s crashed", job_id_str)
-        try:
+        with contextlib.suppress(Exception):
             _set_status(
                 job_id_str,
                 status="error",
@@ -658,8 +664,6 @@ async def run_correction_job(job_id: UUID | str) -> None:
                 error_message=str(exc),
                 current_question_id=None,
             )
-        except Exception:  # noqa: BLE001
-            pass
     finally:
         _RUNNING.pop(job_id_str, None)
 
@@ -718,33 +722,41 @@ def start_job(payload: CorrectionJobStartIn) -> dict:
     cap = max(0, int(settings.correction_gen_max_questions_per_job or 0))
     with engine.begin() as conn:
         _require_user(conn, user_id)
-        if document_id and not conn.execute(text("SELECT 1 FROM documents WHERE id = :id"), {"id": document_id}).first():
-            raise NotFoundError("document not found")
+        if document_id:
+            exists = conn.execute(text("SELECT 1 FROM documents WHERE id = :id"), {"id": document_id}).first()
+            if not exists:
+                raise NotFoundError("document not found")
         total = count_pending_candidates(
             conn, user_id=user_id, mode=mode, document_id=document_id, cap=cap, overwrite=overwrite
         )
         if total == 0:
             raise InvalidRequestError("No pending questions to process (all already have a correction or none match)")
         # A partial unique index allows at most one queued/running job at a time.
-        row = conn.execute(
-            text(
-                f"""
-                INSERT INTO correction_jobs (user_id, mode, document_id, status, total_questions, model, batch_size, overwrite)
-                VALUES (:user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size, :overwrite)
+        row = (
+            conn.execute(
+                text(
+                    f"""
+                INSERT INTO correction_jobs
+                  (user_id, mode, document_id, status, total_questions, model, batch_size, overwrite)
+                VALUES
+                  (:user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size, :overwrite)
                 ON CONFLICT DO NOTHING
                 RETURNING {JOB_COLUMNS}
                 """
-            ),
-            {
-                "user_id": user_id,
-                "mode": mode,
-                "document_id": document_id,
-                "total": total,
-                "model": _model_name(),
-                "batch_size": max(1, int(settings.correction_gen_batch_size or 5)),
-                "overwrite": overwrite,
-            },
-        ).mappings().first()
+                ),
+                {
+                    "user_id": user_id,
+                    "mode": mode,
+                    "document_id": document_id,
+                    "total": total,
+                    "model": _model_name(),
+                    "batch_size": max(1, int(settings.correction_gen_batch_size or 5)),
+                    "overwrite": overwrite,
+                },
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             running = current_job()
             raise ConflictError({"code": "another_job_running", "job_id": running["id"] if running else None})
@@ -756,9 +768,11 @@ def start_job(payload: CorrectionJobStartIn) -> dict:
 
 def get_job(job_id: UUID) -> dict:
     with engine.begin() as conn:
-        row = conn.execute(
-            text(f"SELECT {JOB_COLUMNS} FROM correction_jobs WHERE id = :id"), {"id": str(job_id)}
-        ).mappings().first()
+        row = (
+            conn.execute(text(f"SELECT {JOB_COLUMNS} FROM correction_jobs WHERE id = :id"), {"id": str(job_id)})
+            .mappings()
+            .first()
+        )
     if not row:
         raise NotFoundError("job not found")
     return serialize_job(dict(row))
@@ -766,16 +780,20 @@ def get_job(job_id: UUID) -> dict:
 
 def current_job() -> dict | None:
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                f"""
+        row = (
+            conn.execute(
+                text(
+                    f"""
                 SELECT {JOB_COLUMNS} FROM correction_jobs
                 WHERE status IN ('queued', 'running')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
     return serialize_job(dict(row)) if row else None
 
 
@@ -791,16 +809,20 @@ def recent_jobs(limit: int = 20) -> list[dict]:
 def cancel_job(job_id: UUID) -> dict:
     """Ask a running job to stop after its current batch; terminal jobs are returned unchanged."""
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                f"""
+        row = (
+            conn.execute(
+                text(
+                    f"""
                 UPDATE correction_jobs SET cancel_requested = true
                 WHERE id = :id AND status IN ('queued', 'running')
                 RETURNING {JOB_COLUMNS}
                 """
-            ),
-            {"id": str(job_id)},
-        ).mappings().first()
+                ),
+                {"id": str(job_id)},
+            )
+            .mappings()
+            .first()
+        )
     return serialize_job(dict(row)) if row else get_job(job_id)
 
 
@@ -833,9 +855,10 @@ def coverage(user_id: UUID, document_id: UUID | None = None) -> dict:
     """How many non-discarded questions already have a correction for the user."""
     params: dict[str, Any] = {"user_id": str(user_id), "document_id": str(document_id) if document_id else None}
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                f"""
+        row = (
+            conn.execute(
+                text(
+                    f"""
                 SELECT
                   COUNT(*)::INTEGER AS total,
                   COUNT(*) FILTER (WHERE {HAS_CORRECTION_SQL})::INTEGER AS with_correction
@@ -844,9 +867,12 @@ def coverage(user_id: UUID, document_id: UUID | None = None) -> dict:
                 WHERE q.is_discarded = false
                   AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
                 """
-            ),
-            params,
-        ).mappings().one()
+                ),
+                params,
+            )
+            .mappings()
+            .one()
+        )
     return {
         "total": row["total"],
         "with_correction": row["with_correction"],

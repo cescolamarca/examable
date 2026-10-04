@@ -34,7 +34,9 @@ b. La quantita di dati trasferiti per unita di tempo
 
 def test_numbered_questions_and_inline_options_are_split() -> None:
     # pypdf often glues options onto one line; the parser re-inserts the breaks.
-    questions = parse("1. Quanti byte ha un header UDP? a. 8 b. 20 c. 40 d. 60\n2. Cosa fa ARP? a. Risolve MAC b. Risolve nomi")
+    questions = parse(
+        "1. Quanti byte ha un header UDP? a. 8 b. 20 c. 40 d. 60\n2. Cosa fa ARP? a. Risolve MAC b. Risolve nomi"
+    )
     assert [len(q.options) for q in questions] == [4, 2]
     assert questions[0].options[0].text == "8"
     assert questions[1].stem == "Cosa fa ARP?"
@@ -68,7 +70,8 @@ Calcolare il ritardo end-to-end.
 
 def test_header_lines_are_ignored() -> None:
     questions = parse(
-        "Cognome ____ Nome ____ Matricola ____\nRisposte corrette\nDOMANDA 1\nCosa e' un socket?\na. Un'interfaccia\nb. Un cavo"
+        "Cognome ____ Nome ____ Matricola ____\nRisposte corrette\n"
+        "DOMANDA 1\nCosa e' un socket?\na. Un'interfaccia\nb. Un cavo"
     )
     assert len(questions) == 1
     assert "Matricola" not in questions[0].stem

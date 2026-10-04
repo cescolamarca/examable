@@ -5,9 +5,6 @@ from __future__ import annotations
 import random
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from typing import TypeVar
-
-T = TypeVar("T")
 
 UNTAGGED = "__untagged__"
 
@@ -17,7 +14,7 @@ def primary_topic(tags: Sequence[str] | None) -> str:
     return tags[0] if tags else UNTAGGED
 
 
-def interleave_by_topic(
+def interleave_by_topic[T](
     items: Sequence[T],
     *,
     topic: Callable[[T], str],

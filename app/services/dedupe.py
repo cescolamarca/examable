@@ -17,7 +17,7 @@ from app.database import engine
 
 def _clean_text(raw: str) -> str:
     s = unicodedata.normalize("NFKC", raw or "")
-    s = s.replace("\uFFFD", "")
+    s = s.replace("\ufffd", "")
     s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"\s+([,.;:!?])", r"\1", s)
@@ -163,7 +163,10 @@ def _merge_references(conn: Any, old_id: str, new_id: str) -> None:
         {"old_id": old_id, "new_id": new_id},
     )
     conn.execute(text("DELETE FROM schedule_state WHERE question_id = :old_id"), {"old_id": old_id})
-    conn.execute(text("UPDATE attempts SET question_id = :new_id WHERE question_id = :old_id"), {"old_id": old_id, "new_id": new_id})
+    conn.execute(
+        text("UPDATE attempts SET question_id = :new_id WHERE question_id = :old_id"),
+        {"old_id": old_id, "new_id": new_id},
+    )
 
     conn.execute(
         text(
@@ -259,7 +262,8 @@ def run_cleanup_dedupe() -> dict[str, Any]:
         conn.execute(
             text(
                 """
-                INSERT INTO question_occurrences (question_id, document_id, source_file_name, source_section, source_number)
+                INSERT INTO question_occurrences
+                  (question_id, document_id, source_file_name, source_section, source_number)
                 SELECT q.id, q.document_id, d.title, q.section, q.number_in_section
                 FROM questions q
                 JOIN documents d ON d.id = q.document_id
@@ -374,18 +378,22 @@ def detach_document_questions(conn: Any, document_id: str) -> int:
     they occur in, keeping their attempts, schedules and corrections. Returns the
     number of questions that were deleted because no other document contains them.
     """
-    shared = conn.execute(
-        text(
-            """
+    shared = (
+        conn.execute(
+            text(
+                """
             SELECT DISTINCT ON (o.question_id) o.question_id, o.document_id, o.source_number
             FROM question_occurrences o
             JOIN questions q ON q.id = o.question_id
             WHERE q.document_id = :document_id AND o.document_id <> :document_id
             ORDER BY o.question_id, o.created_at, o.source_file_name
             """
-        ),
-        {"document_id": document_id},
-    ).mappings().all()
+            ),
+            {"document_id": document_id},
+        )
+        .mappings()
+        .all()
+    )
     for row in shared:
         # Reuse the number the question had in the new owner unless that slot is taken.
         conn.execute(
