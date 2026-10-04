@@ -10,7 +10,9 @@ from app.schemas import Quality, QuestionOut, SourceLoc
 MCQ_START_RE = re.compile(r"^\s*(\d+)\.\s+(.*)$")
 MCQ_PAREN_RE = re.compile(r"^\s*(\d+)\)\s+(.*)$")
 DOMANDA_RE = re.compile(r"^\s*DOMANDA\s+(\d+)\s*$", re.IGNORECASE)
-OPTION_RE = re.compile(r"^\s*([a-d])\.\s+(.*)$", re.IGNORECASE)
+# "a. testo". OCR sometimes drops the space ("b.A"), so it is optional before an
+# uppercase letter or digit, but not before lowercase ("c.d." is an abbreviation).
+OPTION_RE = re.compile(r"^\s*((?i:[a-d]))\.(?:\s+|(?=[^\s.a-z]))(.*)$")
 EXERCISE_RE = re.compile(r"^\s*ESERCIZIO\s+(\d+)", re.IGNORECASE)
 THEORY_RE = re.compile(r"^\s*DOMANDA\s+TEORIA", re.IGNORECASE)
 SUBPART_RE = re.compile(r"^\s*(\d+)\)\s+(.*)$")

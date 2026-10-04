@@ -73,6 +73,35 @@ SESSION_B = [
 ]
 
 
+# An older session that only exists as a scan: it repeats one question from each
+# of the sessions above, so OCR output has to deduplicate against extracted text.
+SESSION_C = [
+    *HEADER,
+    "DOMANDA 1",
+    "Quale record DNS associa un nome di dominio a un indirizzo IPv4?",
+    "a. NS",
+    "b. A",
+    "c. MX",
+    "d. CNAME",
+    "DOMANDA 2",
+    "Quale tecnica di commutazione riserva le risorse per tutta la durata della comunicazione?",
+    "a. Commutazione di pacchetto",
+    "b. Commutazione di circuito",
+    "c. Store-and-forward",
+    "d. Instradamento a datagramma",
+    "DOMANDA 3",
+    "Quale meccanismo permette a piu host di una rete privata di condividere un indirizzo pubblico?",
+    "a. ARP",
+    "b. DNS",
+    "c. NAT",
+    "d. DHCP",
+    "ESERCIZIO 1",
+    "Un collegamento ha banda 10 Mbps e lunghezza 2000 km, con velocita di propagazione 2x10^8 m/s.",
+    "1) Calcolare il ritardo di propagazione.",
+    "2) Calcolare il ritardo di trasmissione di un pacchetto di 1500 byte.",
+]
+
+
 def write_pdf(path: Path, lines: list[str]) -> Path:
     """Render one text line per row, starting a new page when the current one is full."""
     pdf = canvas.Canvas(str(path), pagesize=A4)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.integration.conftest import upload_and_process
+from tests.sample_exams import SESSION_C, write_scanned_pdf
 
 
 def _questions(client: TestClient, document_id: str) -> list[dict]:
@@ -120,3 +123,18 @@ def test_reprocessing_a_session_is_idempotent(client: TestClient, ingested: tupl
     assert len(_questions(client, first)) + len(_questions(client, second)) == 7
     report = client.get("/reports/question-occurrences").json()
     assert sorted(i["occurrences_count"] for i in report["items"]) == [1, 1, 1, 1, 1, 2, 2]
+
+
+@pytest.mark.skipif(not (shutil.which("pdftoppm") and shutil.which("tesseract")), reason="needs OCR tools")
+def test_scanned_session_is_deduplicated_against_text_sessions(
+    client: TestClient, ingested: tuple[str, str], tmp_path: Path
+) -> None:
+    scan = write_scanned_pdf(tmp_path / "reti_2023_02_scansione.pdf", SESSION_C)
+    document_id = upload_and_process(client, scan)
+    assert client.get("/documents").json()[0]["id"] == document_id
+
+    report = client.get("/reports/question-occurrences").json()
+    # 5 + 4 + 4 extracted questions; the scan repeats one question of each text session.
+    assert report["total_questions"] == 9
+    repeated = {item["stem_preview"].split()[1] for item in report["items"] if item["occurrences_count"] == 2}
+    assert repeated == {"protocollo", "bit", "record", "meccanismo"}
