@@ -85,3 +85,14 @@ def test_repeated_question_numbers_do_not_collide() -> None:
 def test_rule_tags_are_attached() -> None:
     (question,) = parse("DOMANDA 1\nQuale porta usa DNS?\na. 53\nb. 80")
     assert {"dns", "reti"} <= set(question.tags)
+
+
+def test_ocr_option_without_space_is_recognised() -> None:
+    (question,) = parse("DOMANDA 1\nQuale record DNS?\na. NS\nb.A\nc. MX\nd.CNAME")
+    assert [(o.id, o.text) for o in question.options] == [("a", "NS"), ("b", "A"), ("c", "MX"), ("d", "CNAME")]
+
+
+def test_abbreviations_are_not_mistaken_for_options() -> None:
+    (question,) = parse("DOMANDA 1\nIl c.d. collo di bottiglia\nc.d. limita il throughput?\na. Si\nb. No")
+    assert [o.id for o in question.options] == ["a", "b"]
+    assert "c.d. limita" in question.stem

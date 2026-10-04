@@ -86,6 +86,9 @@ def _clean_subparts(subparts: Any) -> list[dict[str, str]]:
     return out
 
 
+LEADING_NUMBERING_RE = re.compile(r"^(?:(?:domanda|esercizio|quesito)\s+)?\d+\s+")
+
+
 @dataclass
 class QuestionRow:
     id: str
@@ -99,9 +102,9 @@ class QuestionRow:
 
     @property
     def fingerprint(self) -> str:
-        stem_part = _canonical_text(self.stem)
-        stem_part = re.sub(r"\b\d+\b", " ", stem_part)
-        stem_part = re.sub(r"\s+", " ", stem_part).strip()
+        # Drop only the leading numbering ("3.", "12)", "esercizio 2"): numbers inside
+        # the text are data, and exercises that differ only in them are different.
+        stem_part = LEADING_NUMBERING_RE.sub("", _canonical_text(self.stem))
         if self.question_type == "multiple_choice":
             # Sort by canonical text (not option id) so that transposed answer
             # orderings — same options, different A/B/C/D assignment — collapse

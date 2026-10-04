@@ -55,3 +55,17 @@ def test_option_text_keeps_symbols_that_change_meaning() -> None:
 def test_keeper_score_prefers_confident_and_complete_questions() -> None:
     assert make("Domanda", confidence=0.95).score > make("Domanda", confidence=0.6).score
     assert make("Domanda molto piu lunga e completa").score > make("Domanda").score
+
+
+def test_exercises_with_different_data_are_not_merged() -> None:
+    first = make(
+        "ESERCIZIO 1 Un datagramma di 4000 byte attraversa un link con MTU 1500 byte.", question_type="open_text"
+    )
+    other = make(
+        "ESERCIZIO 1 Un datagramma di 3000 byte attraversa un link con MTU 1000 byte.", question_type="open_text"
+    )
+    renumbered = make(
+        "ESERCIZIO 3 Un datagramma di 4000 byte attraversa un link con MTU 1500 byte.", question_type="open_text"
+    )
+    assert first.fingerprint != other.fingerprint
+    assert first.fingerprint == renumbered.fingerprint
