@@ -572,7 +572,7 @@ async function refreshReviewStats() {
   }
 }
 
-function applyStudyFilters() {
+async function applyStudyFilters() {
   studyFilters.documentId = el("study-filter-document-id").value.trim();
   studyFilters.tag = el("study-filter-tag").value.trim();
   studyFilters.tagPreset = el("study-filter-tag-preset").value.trim();
@@ -608,8 +608,10 @@ function applyStudyFilters() {
   if (studyFilters.reviewMode && studyFilters.reviewMode !== "all") {
     active.push(`review=${studyFilters.reviewMode}`);
   }
-  setInlineStatus(status, active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi");
   refreshReviewStats();
+  // Show the first matching question right away instead of an empty card.
+  await loadNextStudyQuestion(false, true);
+  setInlineStatus(status, active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi");
 }
 
 async function loadNextStudyQuestion(excludeCurrent = false, preferNew = false) {
