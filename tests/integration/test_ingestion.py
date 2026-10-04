@@ -58,6 +58,7 @@ def test_dedupe_is_idempotent(client: TestClient, ingested: tuple[str, str]) -> 
     report = client.post("/admin/cleanup-dedupe").json()
     assert report["duplicate_groups_merged"] == 0
     assert report["total_questions_after"] == 7
+    assert report["rows_normalised"] == 0  # nothing left to rewrite
 
 
 def test_duplicate_upload_is_rejected_without_leaving_files(

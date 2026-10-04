@@ -22,26 +22,61 @@ class ExtractionResult:
     quality_score: float
 
 
-def _quality_score(pages: list[str]) -> float:
+# Below this score a result is "low quality": try the next extractor.
+ACCEPTABLE_QUALITY = 0.45
+
+QUESTION_MARKER_RE = re.compile(
+    r"(?im)^\s*\d+\.\s|^\s*\d+\)\s|^\s*DOMANDA\s+\d+|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+"
+)
+CID_GLYPH_RE = re.compile(r"\(cid:\d+\)")  # unmapped glyphs in pdfminer output
+WORD_RE = re.compile(r"[^\W\d_]{2,}|\d+")
+COMMON_PUNCTUATION = set(".,;:!?'\"()[]{}-/%+=<>*_\u2019\u201c\u201d")
+CHARS_PER_PAGE_WITH_TEXT = 80
+
+
+def quality_score(pages: list[str]) -> float:
+    """Score (0-1) how usable extracted text is, independently of how long it is.
+
+    The previous heuristic was dominated by length (characters / 7000), so a short
+    but perfectly extracted exam scored ~0.2 and triggered OCR and the paid LLM
+    pass for nothing. The score now combines:
+
+    * readability: share of letters, digits and common punctuation; replacement
+      characters, mojibake and pdfminer "(cid:NN)" glyphs lower it;
+    * words: share of whitespace-separated tokens that are words or numbers
+      (OCR noise produces fragments mixing letters and symbols);
+    * structure: whether question markers (DOMANDA n, ESERCIZIO n, "1.") exist;
+    * coverage: the share of pages that yielded text. It multiplies the rest, so
+      a PDF whose pages are mostly scans still falls through to OCR even when
+      the few text pages are clean.
+    """
     text = "\n".join(pages)
-    compact = re.sub(r"\s+", "", text)
-    marker_count = len(
-        re.findall(
-            r"(?im)^\s*\d+\.\s|^\s*\d+\)\s|^\s*DOMANDA\s+\d+|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+",
-            text,
-        )
-    )
-    length_score = min(1.0, len(compact) / 7000.0)
-    marker_score = min(1.0, marker_count / 10.0)
-    return round(0.65 * length_score + 0.35 * marker_score, 3)
+    chars = re.sub(r"\s+", "", text)
+    if not chars:
+        return 0.0
+
+    cid_chars = sum(len(m) for m in CID_GLYPH_RE.findall(text))
+    readable = sum(1 for ch in chars if ch.isalnum() or ch in COMMON_PUNCTUATION) - cid_chars
+    readability = max(0, readable) / len(chars)
+
+    tokens = CID_GLYPH_RE.sub(" \x00 ", text).split()
+    words = sum(1 for t in tokens if WORD_RE.fullmatch(t.strip(".,;:!?'\"()[]")))
+    word_ratio = words / len(tokens) if tokens else 0.0
+
+    # One blank page (cover or back side) is normal and is not penalised.
+    page_text = sum(min(1.0, len(re.sub(r"\s+", "", p)) / CHARS_PER_PAGE_WITH_TEXT) for p in pages)
+    coverage = min(1.0, page_text / max(1, len(pages) - 1))
+    structure = min(1.0, len(QUESTION_MARKER_RE.findall(text)) / 3)
+
+    return round((0.35 * readability + 0.25 * word_ratio + 0.4 * structure) * coverage, 3)
 
 
 def _extract_with_pypdf_raw(pdf_path: Path) -> ExtractionResult:
     reader = PdfReader(str(pdf_path), strict=False)
     pages = [page.extract_text() or "" for page in reader.pages]
     warnings: list[str] = []
-    quality = _quality_score(pages)
-    if quality < 0.35:
+    quality = quality_score(pages)
+    if quality < ACCEPTABLE_QUALITY:
         warnings.append("Low text quality with pypdf extraction")
     return ExtractionResult(pages=pages, method="pypdf", warnings=warnings, quality_score=quality)
 
@@ -70,9 +105,9 @@ def _extract_with_pdfminer_raw(pdf_path: Path) -> ExtractionResult | None:
     # Form-feed is a common page separator in pdfminer output.
     raw = extract_text(str(pdf_path)) or ""
     pages = [p for p in raw.split("\f") if p is not None]
-    quality = _quality_score(pages)
+    quality = quality_score(pages)
     warnings: list[str] = []
-    if quality < 0.35:
+    if quality < ACCEPTABLE_QUALITY:
         warnings.append("Low text quality with pdfminer extraction")
     return ExtractionResult(pages=pages, method="pdfminer", warnings=warnings, quality_score=quality)
 
@@ -131,7 +166,7 @@ def _extract_with_ocr_tools(pdf_path: Path, page_count: int) -> ExtractionResult
             else:
                 texts.append(ocr_proc.stdout or "")
 
-    quality = _quality_score(texts)
+    quality = quality_score(texts)
     return ExtractionResult(pages=texts, method="ocr", warnings=warnings, quality_score=quality)
 
 
@@ -140,7 +175,7 @@ def extract_text_pages_with_fallback(pdf_path: Path) -> ExtractionResult:
 
     pypdf_result = _extract_with_pypdf(pdf_path)
     attempts.append(pypdf_result)
-    if pypdf_result.quality_score >= 0.45:
+    if pypdf_result.quality_score >= ACCEPTABLE_QUALITY:
         return pypdf_result
 
     pdfminer_result = _extract_with_pdfminer(pdf_path)
@@ -148,7 +183,7 @@ def extract_text_pages_with_fallback(pdf_path: Path) -> ExtractionResult:
         attempts.append(pdfminer_result)
 
     best = max(attempts, key=lambda x: x.quality_score)
-    if best.quality_score >= 0.45:
+    if best.quality_score >= ACCEPTABLE_QUALITY:
         return best
 
     ocr_result = _extract_with_ocr_tools(pdf_path, page_count=max(1, len(pypdf_result.pages)))
@@ -156,6 +191,6 @@ def extract_text_pages_with_fallback(pdf_path: Path) -> ExtractionResult:
         attempts.append(ocr_result)
 
     best = max(attempts, key=lambda x: x.quality_score)
-    if best.quality_score < 0.45:
+    if best.quality_score < ACCEPTABLE_QUALITY:
         best.warnings.append("Extraction quality is low; manual review recommended")
     return best
