@@ -127,17 +127,17 @@ def _question_has_any_tag_sql(*, param_prefix: str, tag_values: list[str]) -> tu
 
 @app.get("/", response_class=HTMLResponse)
 def ui_home(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("study.html", {"request": request})
+    return templates.TemplateResponse(request, "study.html")
 
 
 @app.get("/study", response_class=HTMLResponse)
 def ui_study(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("study.html", {"request": request})
+    return templates.TemplateResponse(request, "study.html")
 
 
 @app.get("/ingest", response_class=HTMLResponse)
 def ui_ingest(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("ingest.html", {"request": request})
+    return templates.TemplateResponse(request, "ingest.html")
 
 
 @app.get("/health")
