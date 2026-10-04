@@ -3,16 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import text
 
-from app.database import engine  # noqa: E402
+from app.database import engine
 
 
 def main() -> None:
@@ -97,7 +97,7 @@ def main() -> None:
         )
 
     payload = {
-        "exported_at": datetime.now(tz=timezone.utc).isoformat(),
+        "exported_at": datetime.now(tz=UTC).isoformat(),
         "total_questions": len(questions),
         "include_discarded": bool(args.include_discarded),
         "questions": questions,
@@ -109,4 +109,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

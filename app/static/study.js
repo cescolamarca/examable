@@ -121,8 +121,32 @@ function effectiveCorrectOptionId(solution, correction) {
   return extractCorrectOptionId(solution);
 }
 
-async function api(url, options = {}) {
-  const res = await fetch(url, options);
+const ADMIN_TOKEN_KEY = "examableAdminToken";
+
+function readAdminToken() {
+  try {
+    return localStorage.getItem(ADMIN_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeAdminToken(token) {
+  try {
+    if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {
+    // Storage can be unavailable (private mode); the token is then asked again next time.
+  }
+}
+
+// Uploads, processing and AI actions require the X-Admin-Token header when the
+// server sets ADMIN_TOKEN. On 401/403 ask for the token once and retry.
+async function api(url, options = {}, retried = false) {
+  const headers = new Headers(options.headers || {});
+  const token = readAdminToken();
+  if (token) headers.set("X-Admin-Token", token);
+  const res = await fetch(url, { ...options, headers });
   const text = await res.text();
   let payload = {};
   try {
@@ -130,8 +154,17 @@ async function api(url, options = {}) {
   } catch {
     payload = { raw: text };
   }
+  if ((res.status === 401 || res.status === 403) && !retried) {
+    const entered = window.prompt("Questa azione richiede il token amministratore:");
+    if (entered) {
+      storeAdminToken(entered.trim());
+      return api(url, options, true);
+    }
+  }
+  if (res.status === 403) storeAdminToken("");
   if (!res.ok) {
-    throw new Error(payload.detail || payload.raw || `HTTP ${res.status}`);
+    const detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail || "");
+    throw new Error(detail || payload.raw || `HTTP ${res.status}`);
   }
   return payload;
 }
@@ -539,7 +572,7 @@ async function refreshReviewStats() {
   }
 }
 
-function applyStudyFilters() {
+async function applyStudyFilters() {
   studyFilters.documentId = el("study-filter-document-id").value.trim();
   studyFilters.tag = el("study-filter-tag").value.trim();
   studyFilters.tagPreset = el("study-filter-tag-preset").value.trim();
@@ -575,8 +608,10 @@ function applyStudyFilters() {
   if (studyFilters.reviewMode && studyFilters.reviewMode !== "all") {
     active.push(`review=${studyFilters.reviewMode}`);
   }
-  setInlineStatus(status, active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi");
   refreshReviewStats();
+  // Show the first matching question right away instead of an empty card.
+  await loadNextStudyQuestion(false, true);
+  setInlineStatus(status, active.length ? `Filtri attivi: ${active.join(" | ")}` : "Filtri rimossi");
 }
 
 async function loadNextStudyQuestion(excludeCurrent = false, preferNew = false) {

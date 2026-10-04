@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections import Counter
 from pathlib import Path
-import sys
 from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.parser import extract_text_pages_with_fallback, parse_unisa_questions
+from app.services.extraction import extract_text_pages_with_fallback
+from app.services.parser import parse_unisa_questions
 
 
 def audit_one(pdf_path: Path) -> dict:
@@ -22,7 +23,7 @@ def audit_one(pdf_path: Path) -> dict:
     try:
         extraction = extract_text_pages_with_fallback(pdf_path)
         questions = parse_unisa_questions(uuid4(), extraction.pages)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["errors"].append(f"parse_failure: {exc}")
         return result
 
