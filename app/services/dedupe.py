@@ -144,14 +144,17 @@ def _merge_references(conn: Any, old_id: str, new_id: str) -> None:
         text(
             """
             INSERT INTO schedule_state (
-              user_id, question_id, due_at, stability, difficulty, retrievability, lapses, reps, state, last_reviewed_at
+              user_id, question_id, due_at, ease_factor, interval_days, lapses, reps, state, last_reviewed_at
             )
-            SELECT user_id, :new_id, due_at, stability, difficulty, retrievability, lapses, reps, state, last_reviewed_at
+            SELECT user_id, :new_id, due_at, ease_factor, interval_days, lapses, reps, state, last_reviewed_at
             FROM schedule_state
             WHERE question_id = :old_id
             ON CONFLICT (user_id, question_id)
             DO UPDATE SET
+              -- Keep the more conservative schedule of the two copies.
               due_at = LEAST(schedule_state.due_at, EXCLUDED.due_at),
+              ease_factor = LEAST(schedule_state.ease_factor, EXCLUDED.ease_factor),
+              interval_days = LEAST(schedule_state.interval_days, EXCLUDED.interval_days),
               lapses = GREATEST(schedule_state.lapses, EXCLUDED.lapses),
               reps = GREATEST(schedule_state.reps, EXCLUDED.reps),
               last_reviewed_at = GREATEST(schedule_state.last_reviewed_at, EXCLUDED.last_reviewed_at)
@@ -243,6 +246,8 @@ def refresh_occurrence_aggregates(conn: Any) -> None:
               GROUP BY question_id
             ) agg
             WHERE q.id = agg.question_id
+              AND (q.occurrences_count, q.source_files_json)
+                  IS DISTINCT FROM (agg.occurrences_count, agg.source_files_json)
             """
         )
     )
@@ -250,7 +255,7 @@ def refresh_occurrence_aggregates(conn: Any) -> None:
 
 def run_cleanup_dedupe() -> dict[str, Any]:
     with engine.begin() as conn:
-        # Backfill provenance rows for legacy questions that do not have occurrences yet.
+        # Backfill provenance for questions that have none yet (legacy rows, bank imports).
         conn.execute(
             text(
                 """
@@ -258,6 +263,7 @@ def run_cleanup_dedupe() -> dict[str, Any]:
                 SELECT q.id, q.document_id, d.title, q.section, q.number_in_section
                 FROM questions q
                 JOIN documents d ON d.id = q.document_id
+                WHERE NOT EXISTS (SELECT 1 FROM question_occurrences o WHERE o.question_id = q.id)
                 ON CONFLICT (question_id, document_id, source_section, source_number) DO NOTHING
                 """
             )
@@ -267,29 +273,45 @@ def run_cleanup_dedupe() -> dict[str, Any]:
             text(
                 """
                 SELECT id, question_type, stem, options_json, subparts_json, confidence,
-                       is_discarded, solution_json
+                       is_discarded, solution_json, dedupe_fingerprint
                 FROM questions
                 """
             )
         ).mappings()
 
         questions: list[QuestionRow] = []
+        changed: list[dict[str, Any]] = []
         for r in rows:
-            questions.append(
-                QuestionRow(
-                    id=str(r["id"]),
-                    question_type=str(r["question_type"]),
-                    stem=_clean_text(str(r["stem"])),
-                    options=_clean_options(r["options_json"]),
-                    subparts=_clean_subparts(r["subparts_json"]),
-                    confidence=float(r["confidence"]),
-                    is_discarded=bool(r["is_discarded"]),
-                    solution=_as_dict(r["solution_json"]),
-                )
+            q = QuestionRow(
+                id=str(r["id"]),
+                question_type=str(r["question_type"]),
+                stem=_clean_text(str(r["stem"])),
+                options=_clean_options(r["options_json"]),
+                subparts=_clean_subparts(r["subparts_json"]),
+                confidence=float(r["confidence"]),
+                is_discarded=bool(r["is_discarded"]),
+                solution=_as_dict(r["solution_json"]),
             )
+            questions.append(q)
+            # Only rows whose normalised form differs are written back, so re-running
+            # the cleanup after each upload costs one read of the bank, not a full rewrite.
+            if (q.stem, q.options, q.subparts, q.fingerprint) != (
+                r["stem"],
+                r["options_json"],
+                r["subparts_json"],
+                r["dedupe_fingerprint"],
+            ):
+                changed.append(
+                    {
+                        "id": q.id,
+                        "stem": q.stem,
+                        "options_json": json.dumps(q.options, ensure_ascii=False),
+                        "subparts_json": json.dumps(q.subparts, ensure_ascii=False),
+                        "fingerprint": q.fingerprint,
+                    }
+                )
 
-        # Persist cleaned fields + fingerprint.
-        for q in questions:
+        if changed:
             conn.execute(
                 text(
                     """
@@ -301,13 +323,7 @@ def run_cleanup_dedupe() -> dict[str, Any]:
                     WHERE id = :id
                     """
                 ),
-                {
-                    "id": q.id,
-                    "stem": q.stem,
-                    "options_json": json.dumps(q.options, ensure_ascii=False),
-                    "subparts_json": json.dumps(q.subparts, ensure_ascii=False),
-                    "fingerprint": q.fingerprint,
-                },
+                changed,
             )
 
         groups: dict[str, list[QuestionRow]] = defaultdict(list)
@@ -342,6 +358,7 @@ def run_cleanup_dedupe() -> dict[str, Any]:
     top_occurrences.sort(key=lambda x: x["occurrences"], reverse=True)
     return {
         "total_questions_after": int(total_after),
+        "rows_normalised": len(changed),
         "duplicate_groups_merged": merged_groups,
         "duplicate_rows_deleted": deleted_rows,
         "top_occurrences": top_occurrences[:50],

@@ -79,3 +79,25 @@ def test_discarded_questions_are_never_served(client: TestClient, ingested: tupl
 
     client.post(f"/questions/{question_id}/discard", params={"discarded": False})
     assert client.get(f"/questions/{question_id}").json()["is_discarded"] is False
+
+
+def test_intervals_grow_with_sm2_and_shrink_after_a_lapse(
+    client: TestClient, ingested: tuple[str, str], user_id: str
+) -> None:
+    question_id = client.get(f"/study/next/{user_id}").json()["question_id"]
+
+    def answer(correct: bool, grade: int | None = None) -> dict:
+        body = {"user_id": user_id, "question_id": question_id, "is_correct": correct}
+        if grade is not None:
+            body["grade"] = grade
+        assert client.post("/attempts", json=body).status_code == 200
+        return _schedule(user_id, question_id)
+
+    assert [float(answer(True)["interval_days"]) for _ in range(3)] == [1.0, 6.0, 15.0]
+
+    lapse = answer(False)
+    assert (lapse["reps"], float(lapse["interval_days"]), lapse["state"]) == (0, 0.0, "relearning")
+    assert float(lapse["ease_factor"]) == 1.96
+
+    # An "easy" grade raises the ease factor again.
+    assert float(answer(True, grade=5)["ease_factor"]) == 2.06

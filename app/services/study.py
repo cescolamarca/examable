@@ -13,7 +13,8 @@ from app.database import engine
 from app.schemas import AttemptIn, NextQuestionResponse
 from app.services import filters
 from app.services.errors import NotFoundError
-from app.services.scheduler import next_due_after_attempt
+from app.services import scheduler
+from app.services.scheduler import ReviewState
 
 DEFAULT_USER_EMAIL = "local@examable.internal"
 MAX_EXCLUDED_IDS = 400
@@ -37,7 +38,7 @@ def get_or_create_default_user() -> dict[str, Any]:
 
 
 def record_attempt(payload: AttemptIn) -> None:
-    """Store the attempt and reschedule the question for this user."""
+    """Store the attempt and reschedule the question for this user with SM-2."""
     now = datetime.now(tz=timezone.utc)
     user_id, question_id = str(payload.user_id), str(payload.question_id)
     with engine.begin() as conn:
@@ -64,22 +65,42 @@ def record_attempt(payload: AttemptIn) -> None:
             },
         )
 
-        state = conn.execute(
-            text("SELECT lapses, reps FROM schedule_state WHERE user_id = :user_id AND question_id = :question_id"),
+        row = conn.execute(
+            text(
+                """
+                SELECT reps, interval_days, ease_factor, lapses
+                FROM schedule_state
+                WHERE user_id = :user_id AND question_id = :question_id
+                FOR UPDATE
+                """
+            ),
             {"user_id": user_id, "question_id": question_id},
         ).first()
-        lapses = state.lapses if state else 0
-        reps = state.reps if state else 0
+        previous = (
+            ReviewState(
+                repetitions=row.reps,
+                interval_days=float(row.interval_days),
+                ease_factor=float(row.ease_factor),
+                lapses=row.lapses,
+            )
+            if row
+            else ReviewState()
+        )
+        outcome = scheduler.review(previous, scheduler.grade_from_attempt(payload.is_correct, payload.grade), now)
 
         conn.execute(
             text(
                 """
-                INSERT INTO schedule_state (user_id, question_id, due_at, lapses, reps, state, last_reviewed_at)
-                VALUES (:user_id, :question_id, :due_at, :lapses, :reps, :state, :now)
+                INSERT INTO schedule_state
+                  (user_id, question_id, due_at, reps, interval_days, ease_factor, lapses, state, last_reviewed_at)
+                VALUES
+                  (:user_id, :question_id, :due_at, :reps, :interval_days, :ease_factor, :lapses, :state, :now)
                 ON CONFLICT (user_id, question_id) DO UPDATE SET
                   due_at = EXCLUDED.due_at,
-                  lapses = EXCLUDED.lapses,
                   reps = EXCLUDED.reps,
+                  interval_days = EXCLUDED.interval_days,
+                  ease_factor = EXCLUDED.ease_factor,
+                  lapses = EXCLUDED.lapses,
                   state = EXCLUDED.state,
                   last_reviewed_at = EXCLUDED.last_reviewed_at
                 """
@@ -87,10 +108,12 @@ def record_attempt(payload: AttemptIn) -> None:
             {
                 "user_id": user_id,
                 "question_id": question_id,
-                "due_at": next_due_after_attempt(payload.is_correct, lapses, reps),
-                "lapses": lapses + (0 if payload.is_correct else 1),
-                "reps": reps + (1 if payload.is_correct else 0),
-                "state": "review" if payload.is_correct else "relearning",
+                "due_at": outcome.due_at,
+                "reps": outcome.state.repetitions,
+                "interval_days": outcome.state.interval_days,
+                "ease_factor": round(outcome.state.ease_factor, 2),
+                "lapses": outcome.state.lapses,
+                "state": outcome.phase,
                 "now": now,
             },
         )
