@@ -18,7 +18,8 @@ RUN pip install -r requirements.txt
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY app ./app
-COPY sql ./sql
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 # The entrypoint fixes volume ownership and then runs the server as this user.
 RUN useradd --create-home --uid 10001 examable

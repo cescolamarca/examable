@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import engine, healthcheck
-from app.db_schema import ensure_runtime_schema
+from app.migrate import upgrade_database
 from app.routers import admin, corrections, documents, pages, questions, reports, simulations, study, tags
 from app.security import admin_auth_enabled
 from app.services.corrections import mark_orphan_running_as_interrupted
@@ -28,7 +28,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    ensure_runtime_schema()
+    upgrade_database()
     with engine.begin() as conn:
         seed_tags_and_presets(conn)
     # Jobs run in-process, so queued/running rows can only be left over from a
