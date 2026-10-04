@@ -1,3 +1,5 @@
+"""Question-bank cleanup: text normalisation, canonical fingerprints and duplicate merging."""
+
 from __future__ import annotations
 
 import hashlib
@@ -6,328 +8,11 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 
 from app.database import engine
-
-
-def ensure_runtime_schema() -> None:
-    with engine.begin() as conn:
-        has_documents = conn.execute(text("SELECT to_regclass('public.documents')")).scalar()
-        if has_documents is None:
-            schema_path = Path("sql/schema.sql")
-            if schema_path.exists():
-                conn.exec_driver_sql(schema_path.read_text(encoding="utf-8"))
-
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'questions'
-                  ) THEN
-                    ALTER TABLE questions
-                    ADD COLUMN IF NOT EXISTS occurrences_count INTEGER NOT NULL DEFAULT 1;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'questions'
-                  ) THEN
-                    ALTER TABLE questions
-                    ADD COLUMN IF NOT EXISTS source_files_json JSONB NOT NULL DEFAULT '[]'::jsonb;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'questions'
-                  ) THEN
-                    ALTER TABLE questions
-                    ADD COLUMN IF NOT EXISTS dedupe_fingerprint CHAR(40);
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'questions'
-                  ) THEN
-                    ALTER TABLE questions
-                    ADD COLUMN IF NOT EXISTS is_discarded BOOLEAN NOT NULL DEFAULT false;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'questions'
-                  ) THEN
-                    ALTER TABLE questions
-                    ADD COLUMN IF NOT EXISTS discarded_at TIMESTAMPTZ;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_questions_dedupe_fingerprint
-                ON questions (dedupe_fingerprint)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_questions_is_discarded
-                ON questions (is_discarded)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS question_occurrences (
-                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-                  document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-                  source_file_name TEXT NOT NULL,
-                  source_section VARCHAR(20),
-                  source_number INTEGER,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  UNIQUE (question_id, document_id, source_section, source_number)
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_question_occurrences_question
-                ON question_occurrences (question_id)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_question_occurrences_document
-                ON question_occurrences (document_id)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS question_reviews (
-                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                  question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-                  status VARCHAR(20) NOT NULL CHECK (status IN ('correct', 'wrong')),
-                  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  PRIMARY KEY (user_id, question_id)
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_question_reviews_user_status
-                ON question_reviews (user_id, status)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS question_corrections (
-                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                  question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-                  correct_option_id TEXT,
-                  explanation_text TEXT,
-                  answer_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  PRIMARY KEY (user_id, question_id)
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_question_corrections_user
-                ON question_corrections (user_id)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS correction_jobs (
-                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                  mode VARCHAR(20) NOT NULL CHECK (mode IN ('document','frequency')),
-                  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
-                  status VARCHAR(20) NOT NULL
-                    CHECK (status IN ('queued','running','done','cancelled','interrupted','error')),
-                  total_questions INTEGER NOT NULL DEFAULT 0,
-                  processed_count INTEGER NOT NULL DEFAULT 0,
-                  succeeded_count INTEGER NOT NULL DEFAULT 0,
-                  failed_count INTEGER NOT NULL DEFAULT 0,
-                  skipped_count INTEGER NOT NULL DEFAULT 0,
-                  current_question_id UUID,
-                  failures_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-                  cancel_requested BOOLEAN NOT NULL DEFAULT false,
-                  overwrite BOOLEAN NOT NULL DEFAULT false,
-                  model VARCHAR(100) NOT NULL,
-                  batch_size INTEGER NOT NULL DEFAULT 5,
-                  error_message TEXT,
-                  started_at TIMESTAMPTZ,
-                  finished_at TIMESTAMPTZ,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_correction_jobs_status
-                ON correction_jobs (status)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_correction_jobs_document
-                ON correction_jobs (document_id)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_correction_jobs_created
-                ON correction_jobs (created_at DESC)
-                """
-            )
-        )
-        # Partial unique index: at most one row in (queued|running) state.
-        conn.execute(
-            text(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_correction_jobs_one_running
-                ON correction_jobs ((1)) WHERE status IN ('queued','running')
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'correction_jobs'
-                  ) THEN
-                    ALTER TABLE correction_jobs
-                    ADD COLUMN IF NOT EXISTS overwrite BOOLEAN NOT NULL DEFAULT false;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS simulations (
-                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                  question_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-                  requested_total INTEGER NOT NULL DEFAULT 0,
-                  generated_total INTEGER NOT NULL DEFAULT 0,
-                  exhaustive BOOLEAN NOT NULL DEFAULT false
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_simulations_user_created
-                ON simulations (user_id, created_at DESC)
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = 'attempts'
-                  ) THEN
-                    ALTER TABLE attempts
-                    ADD COLUMN IF NOT EXISTS simulation_id UUID REFERENCES simulations(id) ON DELETE SET NULL;
-                  END IF;
-                END
-                $$;
-                """
-            )
-        )
 
 
 def _clean_text(raw: str) -> str:
@@ -542,7 +227,7 @@ def _merge_references(conn: Any, old_id: str, new_id: str) -> None:
     conn.execute(text("DELETE FROM question_corrections WHERE question_id = :old_id"), {"old_id": old_id})
 
 
-def _refresh_occurrence_aggregates(conn: Any) -> None:
+def refresh_occurrence_aggregates(conn: Any) -> None:
     conn.execute(
         text(
             """
@@ -564,8 +249,6 @@ def _refresh_occurrence_aggregates(conn: Any) -> None:
 
 
 def run_cleanup_dedupe() -> dict[str, Any]:
-    ensure_runtime_schema()
-
     with engine.begin() as conn:
         # Backfill provenance rows for legacy questions that do not have occurrences yet.
         conn.execute(
@@ -653,7 +336,7 @@ def run_cleanup_dedupe() -> dict[str, Any]:
                 deleted_rows += 1
             merged_groups += 1
 
-        _refresh_occurrence_aggregates(conn)
+        refresh_occurrence_aggregates(conn)
         total_after = conn.execute(text("SELECT COUNT(*) FROM questions")).scalar_one()
 
     top_occurrences.sort(key=lambda x: x["occurrences"], reverse=True)
@@ -663,3 +346,57 @@ def run_cleanup_dedupe() -> dict[str, Any]:
         "duplicate_rows_deleted": deleted_rows,
         "top_occurrences": top_occurrences[:50],
     }
+
+
+def detach_document_questions(conn: Any, document_id: str) -> int:
+    """Remove a document's contribution to the bank without losing shared questions.
+
+    After deduplication a question shared by several exam sessions is owned by one
+    of them. Deleting (or re-processing) that owner must not drop the question for
+    the other sessions, so shared questions are first moved to another document
+    they occur in, keeping their attempts, schedules and corrections. Returns the
+    number of questions that were deleted because no other document contains them.
+    """
+    shared = conn.execute(
+        text(
+            """
+            SELECT DISTINCT ON (o.question_id) o.question_id, o.document_id, o.source_number
+            FROM question_occurrences o
+            JOIN questions q ON q.id = o.question_id
+            WHERE q.document_id = :document_id AND o.document_id <> :document_id
+            ORDER BY o.question_id, o.created_at, o.source_file_name
+            """
+        ),
+        {"document_id": document_id},
+    ).mappings().all()
+    for row in shared:
+        # Reuse the number the question had in the new owner unless that slot is taken.
+        conn.execute(
+            text(
+                """
+                UPDATE questions q
+                SET document_id = :new_document_id,
+                    number_in_section = CASE
+                      WHEN CAST(:number AS INTEGER) IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM questions x
+                        WHERE x.document_id = :new_document_id AND x.section = q.section
+                          AND x.number_in_section = CAST(:number AS INTEGER)
+                      ) THEN CAST(:number AS INTEGER)
+                      ELSE (
+                        SELECT COALESCE(MAX(x.number_in_section), 0) + 1 FROM questions x
+                        WHERE x.document_id = :new_document_id AND x.section = q.section
+                      )
+                    END
+                WHERE q.id = :question_id
+                """
+            ),
+            {
+                "question_id": str(row["question_id"]),
+                "new_document_id": str(row["document_id"]),
+                "number": row["source_number"],
+            },
+        )
+    conn.execute(text("DELETE FROM question_occurrences WHERE document_id = :id"), {"id": document_id})
+    deleted = conn.execute(text("DELETE FROM questions WHERE document_id = :id"), {"id": document_id}).rowcount
+    refresh_occurrence_aggregates(conn)
+    return int(deleted or 0)

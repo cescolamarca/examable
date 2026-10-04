@@ -13,8 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.multimodal import enhance_with_multimodal
-from app.parser import extract_text_pages_with_fallback, parse_unisa_questions
+from app.services.multimodal import enhance_with_multimodal
+from app.services.extraction import extract_text_pages_with_fallback
+from app.services.parser import parse_unisa_questions
 
 
 def extract_archives(zip_paths: list[Path], target_dir: Path) -> list[Path]:
