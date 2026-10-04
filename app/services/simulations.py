@@ -275,16 +275,20 @@ def list_for_user(user_id: UUID, limit: int = 20) -> list[dict]:
 def get(simulation_id: UUID) -> dict:
     """A stored simulation with each question's latest attempt, ready to be resumed."""
     with engine.begin() as conn:
-        sim = conn.execute(
-            text(
-                """
+        sim = (
+            conn.execute(
+                text(
+                    """
                 SELECT id, created_at, config_json, question_ids_json, requested_total, generated_total, exhaustive
                 FROM simulations
                 WHERE id = :id
                 """
-            ),
-            {"id": str(simulation_id)},
-        ).mappings().first()
+                ),
+                {"id": str(simulation_id)},
+            )
+            .mappings()
+            .first()
+        )
         if not sim:
             raise NotFoundError("Simulation not found")
 

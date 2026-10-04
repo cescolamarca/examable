@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -13,7 +13,7 @@ from app.services.scheduler import (
     updated_ease,
 )
 
-NOW = datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
 
 
 def run(grades: list[int]) -> list[float]:

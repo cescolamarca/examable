@@ -104,9 +104,7 @@ def import_question_bank(raw: bytes, *, source_name: str, title: str) -> dict:
     counts = {"inserted_questions": 0, "inserted_occurrences": 0, "inserted_question_tags": 0}
 
     with engine.begin() as conn:
-        document_id = _upsert_document(
-            conn, title=title, source_name=source_name, sha=hashlib.sha256(raw).hexdigest()
-        )
+        document_id = _upsert_document(conn, title=title, source_name=source_name, sha=hashlib.sha256(raw).hexdigest())
         for item in questions:
             if not isinstance(item, dict):
                 continue

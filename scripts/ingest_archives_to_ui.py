@@ -79,7 +79,7 @@ def run(base_url: str, zip_paths: list[Path], workdir: Path, admin_token: str | 
                 proc_data = proc.json()
                 item["process"] = proc_data
                 item["status"] = "processed"
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 item["status"] = "error"
                 item["error"] = str(exc)
             report_items.append(item)

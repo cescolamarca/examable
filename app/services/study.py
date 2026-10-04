@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -11,9 +11,8 @@ from sqlalchemy import Connection, text
 
 from app.database import engine
 from app.schemas import AttemptIn, NextQuestionResponse
-from app.services import filters
+from app.services import filters, scheduler
 from app.services.errors import NotFoundError
-from app.services import scheduler
 from app.services.scheduler import ReviewState
 
 DEFAULT_USER_EMAIL = "local@examable.internal"
@@ -23,23 +22,27 @@ MAX_EXCLUDED_IDS = 400
 def get_or_create_default_user() -> dict[str, Any]:
     """The app runs in single-user mode: every client shares this account."""
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 INSERT INTO users (id, email, full_name, role)
                 VALUES (:id, :email, 'Local User', 'student')
                 ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
                 RETURNING id, email
                 """
-            ),
-            {"id": str(uuid4()), "email": DEFAULT_USER_EMAIL},
-        ).mappings().one()
+                ),
+                {"id": str(uuid4()), "email": DEFAULT_USER_EMAIL},
+            )
+            .mappings()
+            .one()
+        )
     return {"id": row["id"], "email": row["email"]}
 
 
 def record_attempt(payload: AttemptIn) -> None:
     """Store the attempt and reschedule the question for this user with SM-2."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     user_id, question_id = str(payload.user_id), str(payload.question_id)
     with engine.begin() as conn:
         conn.execute(
@@ -287,9 +290,10 @@ def correction_stats(
         user_id=user_id, document_id=document_id, tag=tag, tag_preset=tag_preset, question_type=question_type
     )
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                f"""
+        row = (
+            conn.execute(
+                text(
+                    f"""
                 SELECT
                   COUNT(*)::INTEGER AS total,
                   COUNT(*) FILTER (WHERE {filters.HAS_CORRECTION_SQL})::INTEGER AS with_correction,
@@ -301,9 +305,12 @@ def correction_stats(
                 LEFT JOIN question_corrections qc ON qc.question_id = q.id AND qc.user_id = :user_id
                 WHERE {where.sql}
                 """
-            ),
-            where.params,
-        ).mappings().one()
+                ),
+                where.params,
+            )
+            .mappings()
+            .one()
+        )
     total = row["total"]
     return {
         "total": total,

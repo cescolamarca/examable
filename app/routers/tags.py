@@ -41,17 +41,21 @@ def create_tag(payload: TagCreateIn) -> dict:
     if not slug:
         raise InvalidRequestError("Invalid tag slug")
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
+        row = (
+            conn.execute(
+                text(
+                    """
                 INSERT INTO tags (name, slug, parent_id)
                 VALUES (:name, :slug, :parent_id)
                 ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id
                 RETURNING id, name, slug, parent_id
                 """
-            ),
-            {"name": name, "slug": slug, "parent_id": str(payload.parent_id) if payload.parent_id else None},
-        ).mappings().one()
+                ),
+                {"name": name, "slug": slug, "parent_id": str(payload.parent_id) if payload.parent_id else None},
+            )
+            .mappings()
+            .one()
+        )
     return dict(row)
 
 
@@ -62,7 +66,9 @@ def list_tag_presets() -> list[dict]:
             text(
                 """
                 SELECT p.id, p.name, p.slug, p.description,
-                       COALESCE(jsonb_agg(t.slug ORDER BY t.slug) FILTER (WHERE t.slug IS NOT NULL), '[]'::jsonb) AS tags
+                       COALESCE(
+                         jsonb_agg(t.slug ORDER BY t.slug) FILTER (WHERE t.slug IS NOT NULL), '[]'::jsonb
+                       ) AS tags
                 FROM tag_presets p
                 LEFT JOIN tag_preset_tags pt ON pt.preset_id = p.id
                 LEFT JOIN tags t ON t.id = pt.tag_id

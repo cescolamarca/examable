@@ -141,7 +141,7 @@ def _call_multimodal_llm(
         if not isinstance(items, list):
             return [], ["Multimodal output malformed: `questions` is not a list"]
         return items, warnings
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return [], [f"Multimodal provider error: {exc}"]
 
 
@@ -242,7 +242,9 @@ def enhance_with_multimodal(
         if (q := _normalize_question(item=item, document_id=document_id, pages_count=len(pages))) is not None
     ]
     if not candidates:
-        return MultimodalOutcome(questions=questions, used=True, warnings=warnings + ["No multimodal candidates returned"])
+        return MultimodalOutcome(
+            questions=questions, used=True, warnings=[*warnings, "No multimodal candidates returned"]
+        )
 
     merged, updates = _merge_questions(existing=questions, candidates=candidates)
     return MultimodalOutcome(questions=merged, used=True, updated_items=updates, warnings=warnings)

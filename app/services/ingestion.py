@@ -84,7 +84,9 @@ def _set_failed(document_id: UUID, error: str) -> None:
         )
 
 
-def _save_questions(document_id: UUID, source_title: str, questions: list[QuestionOut], pages: int, warnings: list[str]) -> None:
+def _save_questions(
+    document_id: UUID, source_title: str, questions: list[QuestionOut], pages: int, warnings: list[str]
+) -> None:
     with engine.begin() as conn:
         # Re-processing replaces this document's questions (shared ones move to another session).
         detach_document_questions(conn, str(document_id))
@@ -223,9 +225,11 @@ def delete_documents(document_ids: list[UUID]) -> dict:
     missing: list[str] = []
     with engine.begin() as conn:
         for document_id in map(str, document_ids):
-            row = conn.execute(
-                text("SELECT title, source_uri FROM documents WHERE id = :id"), {"id": document_id}
-            ).mappings().first()
+            row = (
+                conn.execute(text("SELECT title, source_uri FROM documents WHERE id = :id"), {"id": document_id})
+                .mappings()
+                .first()
+            )
             if not row:
                 missing.append(document_id)
                 continue

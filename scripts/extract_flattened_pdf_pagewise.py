@@ -62,8 +62,8 @@ def _safe_float(value: Any, default: float) -> float:
 
 
 def _fingerprint(q: ExtractedQuestion) -> str:
-    options_blob = "|".join(f"{o.get('id','')}:{_canon(o.get('text',''))}" for o in q.options)
-    subparts_blob = "|".join(f"{s.get('id','')}:{_canon(s.get('prompt',''))}" for s in q.subparts)
+    options_blob = "|".join(f"{o.get('id', '')}:{_canon(o.get('text', ''))}" for o in q.options)
+    subparts_blob = "|".join(f"{s.get('id', '')}:{_canon(s.get('prompt', ''))}" for s in q.subparts)
     payload = f"{q.question_type}##{_canon(q.stem)}##{options_blob}##{subparts_blob}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
@@ -138,7 +138,7 @@ def call_llm_extract_page(page_number: int, image_b64: str, retries: int = 2) ->
             if not isinstance(parsed, dict):
                 raise ValueError("Model output is not a JSON object")
             return parsed
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_err = exc
     raise RuntimeError(f"Failed page {page_number}: {last_err}") from last_err
 
@@ -275,7 +275,10 @@ def run_pipeline(pdf_path: Path, out_dir: Path, start_page: int = 1, end_page: i
     report_path = out_dir / "pagewise_ai_occurrence_report.json"
     flat_path = out_dir / "pagewise_ai_questions_all.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    flat_path.write_text(json.dumps({"total_questions": len(flat_rows), "questions": flat_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    flat_path.write_text(
+        json.dumps({"total_questions": len(flat_rows), "questions": flat_rows}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return report_path, flat_path
 
 

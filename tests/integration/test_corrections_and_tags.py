@@ -5,9 +5,7 @@ from fastapi.testclient import TestClient
 
 def _first_mcq(client: TestClient, document_id: str) -> dict:
     return next(
-        q
-        for q in client.get(f"/documents/{document_id}/questions").json()
-        if q["question_type"] == "multiple_choice"
+        q for q in client.get(f"/documents/{document_id}/questions").json() if q["question_type"] == "multiple_choice"
     )
 
 
@@ -43,9 +41,7 @@ def test_correction_roundtrip_and_coverage(client: TestClient, ingested: tuple[s
     assert [q["id"] for q in only_corrected["questions"]] == [question["id"]]
 
 
-def test_ai_features_report_missing_configuration(
-    client: TestClient, ingested: tuple[str, str], user_id: str
-) -> None:
+def test_ai_features_report_missing_configuration(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
     question = _first_mcq(client, ingested[0])
     response = client.post(f"/questions/{question['id']}/correction/regenerate", json={"user_id": user_id})
     assert response.status_code == 400
@@ -66,9 +62,7 @@ def test_manual_tags(client: TestClient, ingested: tuple[str, str]) -> None:
     assert {t["slug"] for t in tags} == {"livello-di-trasporto", "tcp"}
     assert {t["source"] for t in tags} == {"manual"}
 
-    assert [t["slug"] for t in client.get("/tags", params={"query": "trasporto"}).json()] == [
-        "livello-di-trasporto"
-    ]
+    assert [t["slug"] for t in client.get("/tags", params={"query": "trasporto"}).json()] == ["livello-di-trasporto"]
 
 
 def test_rule_based_tagging_and_presets(client: TestClient, ingested: tuple[str, str]) -> None:

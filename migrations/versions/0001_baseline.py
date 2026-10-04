@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS questions (
 -- Columns added after the first deployments; no-ops on databases that have them.
 ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_discarded BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE questions ADD COLUMN IF NOT EXISTS discarded_at TIMESTAMPTZ;
-ALTER TABLE questions ADD COLUMN IF NOT EXISTS occurrences_count INTEGER NOT NULL DEFAULT 1 CHECK (occurrences_count >= 1);
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS occurrences_count INTEGER NOT NULL DEFAULT 1
+  CHECK (occurrences_count >= 1);
 ALTER TABLE questions ADD COLUMN IF NOT EXISTS source_files_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE questions ADD COLUMN IF NOT EXISTS dedupe_fingerprint CHAR(40);
 CREATE INDEX IF NOT EXISTS idx_questions_dedupe_fingerprint ON questions (dedupe_fingerprint);

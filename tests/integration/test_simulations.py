@@ -3,9 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
-def test_custom_simulation_respects_requested_mix(
-    client: TestClient, ingested: tuple[str, str], user_id: str
-) -> None:
+def test_custom_simulation_respects_requested_mix(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
     response = client.post(
         "/simulations/custom",
         json={"user_id": user_id, "multiple_choice_count": 3, "open_text_count": 5},
@@ -36,9 +34,7 @@ def test_exhaustive_simulation_filtered_by_document(
     assert {q["document_id"] for q in body["questions"]} == {first}
 
 
-def test_tag_filter_accepts_comma_separated_values(
-    client: TestClient, ingested: tuple[str, str], user_id: str
-) -> None:
+def test_tag_filter_accepts_comma_separated_values(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
     body = client.post(
         "/simulations/custom",
         json={"user_id": user_id, "exhaustive": True, "tag": "dns, nat"},
@@ -48,9 +44,7 @@ def test_tag_filter_accepts_comma_separated_values(
 
 
 def test_simulation_history_resume_and_delete(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
-    created = client.post(
-        "/simulations/custom", json={"user_id": user_id, "multiple_choice_count": 2}
-    ).json()
+    created = client.post("/simulations/custom", json={"user_id": user_id, "multiple_choice_count": 2}).json()
     sim_id = created["simulation_id"]
     answered = created["questions"][0]["id"]
     client.post(
@@ -71,23 +65,17 @@ def test_simulation_history_resume_and_delete(client: TestClient, ingested: tupl
     assert client.delete(f"/simulations/{sim_id}").status_code == 404
 
 
-def test_simulation_from_wrong_answers_keeps_order(
-    client: TestClient, ingested: tuple[str, str], user_id: str
-) -> None:
-    pool = client.post(
-        "/simulations/custom", json={"user_id": user_id, "multiple_choice_count": 3}
-    ).json()["questions"]
+def test_simulation_from_wrong_answers_keeps_order(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
+    pool = client.post("/simulations/custom", json={"user_id": user_id, "multiple_choice_count": 3}).json()["questions"]
     ids = [q["id"] for q in pool][::-1]
-    body = client.post(
-        "/simulations/from-questions", json={"user_id": user_id, "question_ids": ids + ids[:1]}
-    ).json()
+    body = client.post("/simulations/from-questions", json={"user_id": user_id, "question_ids": ids + ids[:1]}).json()
     assert [q["id"] for q in body["questions"]] == ids
 
 
 def test_priority_modes(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:
-    pool = client.post(
-        "/simulations/custom", json={"user_id": user_id, "exhaustive": True, "randomize": False}
-    ).json()["questions"]
+    pool = client.post("/simulations/custom", json={"user_id": user_id, "exhaustive": True, "randomize": False}).json()[
+        "questions"
+    ]
     mistaken = pool[0]["id"]
     client.post("/attempts", json={"user_id": user_id, "question_id": mistaken, "is_correct": False})
 

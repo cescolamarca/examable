@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 def _canon(text: str) -> str:
     s = unicodedata.normalize("NFKC", text or "").lower()
     s = "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")

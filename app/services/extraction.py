@@ -25,9 +25,7 @@ class ExtractionResult:
 # Below this score a result is "low quality": try the next extractor.
 ACCEPTABLE_QUALITY = 0.45
 
-QUESTION_MARKER_RE = re.compile(
-    r"(?im)^\s*\d+\.\s|^\s*\d+\)\s|^\s*DOMANDA\s+\d+|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+"
-)
+QUESTION_MARKER_RE = re.compile(r"(?im)^\s*\d+\.\s|^\s*\d+\)\s|^\s*DOMANDA\s+\d+|DOMANDA\s+TEORIA|ESERCIZIO\s+\d+")
 CID_GLYPH_RE = re.compile(r"\(cid:\d+\)")  # unmapped glyphs in pdfminer output
 WORD_RE = re.compile(r"[^\W\d_]{2,}|\d+")
 COMMON_PUNCTUATION = set(".,;:!?'\"()[]{}-/%+=<>*_\u2019\u201c\u201d")
