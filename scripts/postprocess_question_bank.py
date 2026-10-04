@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
@@ -7,9 +8,6 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-IN_PATH = Path(r"c:\Users\nextc\Examable\pagewise_ai_questions_all.json")
-OUT_BANK = Path(r"c:\Users\nextc\Examable\banca_domande_postprocessed.json")
-OUT_REPORT = Path(r"c:\Users\nextc\Examable\banca_domande_postprocess_report.json")
 
 
 def _canon(text: str) -> str:
@@ -116,7 +114,13 @@ def _merge_key_from_candidate(candidate: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    src = json.loads(IN_PATH.read_text(encoding="utf-8"))
+    parser = argparse.ArgumentParser(description="Clean and merge the page-wise AI extraction into a question bank")
+    parser.add_argument("--input", type=Path, default=Path("pagewise_ai_questions_all.json"))
+    parser.add_argument("--out", type=Path, default=Path("banca_domande_postprocessed.json"))
+    parser.add_argument("--report", type=Path, default=Path("banca_domande_postprocess_report.json"))
+    args = parser.parse_args()
+
+    src = json.loads(args.input.read_text(encoding="utf-8"))
     rows = src.get("questions", [])
     total_in = len(rows)
 
@@ -219,10 +223,10 @@ def main() -> None:
         },
         "questions": questions,
     }
-    OUT_BANK.write_text(json.dumps(bank, ensure_ascii=False, indent=2), encoding="utf-8")
-    OUT_REPORT.write_text(json.dumps(bank["summary"], ensure_ascii=False, indent=2), encoding="utf-8")
+    args.out.write_text(json.dumps(bank, ensure_ascii=False, indent=2), encoding="utf-8")
+    args.report.write_text(json.dumps(bank["summary"], ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(bank["summary"], ensure_ascii=False))
-    print(str(OUT_BANK))
+    print(str(args.out))
 
 
 if __name__ == "__main__":

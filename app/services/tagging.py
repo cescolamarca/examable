@@ -1,9 +1,10 @@
+"""Topic tags: built-in taxonomy, rule/LLM tagging and the course presets."""
+
 from __future__ import annotations
 
 import json
 import re
 import unicodedata
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -176,7 +177,8 @@ INTERCORSO_1_PRESET_NAME = "Intercorso 1"
 INTERCORSO_1_PRESET_DESCRIPTION = (
     "Domande estratte dalla banca intercorso (flattened PDF) con tagging AI + post-processing."
 )
-INTERCORSO_1_BANK_PATH = Path(r"c:\Users\nextc\Examable\banca_domande_postprocessed.json")
+# Title given to the imported question bank (see app.services.question_bank).
+INTERCORSO_1_BANK_TITLE = "Intercorso 1 - banca postprocessed"
 
 MODULE_2_PRESET_SLUG = "modulo-2"
 MODULE_2_PRESET_NAME = "Modulo 2"
@@ -186,7 +188,13 @@ MODULE_2_PRESET_DESCRIPTION = (
 MODULE_2_DOC_TITLE_SQL = r"^(esame|traccia)_.*\.pdf$"
 
 
-def _slugify(value: str) -> str:
+def manual_tag_slug(name: str) -> str:
+    """Slug for user-entered tag names; keeps accented letters, unlike `slugify`."""
+    raw = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
+    return "-".join(part for part in raw.split("-") if part)
+
+
+def slugify(value: str) -> str:
     s = unicodedata.normalize("NFKD", value or "")
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     s = s.lower().strip()
@@ -233,7 +241,6 @@ def _ai_suggest_tags(stem: str, options: Any, subparts: Any, allowed_slugs: list
     }
     payload = {
         "model": settings.multimodal_model,
-        "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
             {
@@ -275,36 +282,8 @@ def ensure_base_tags(conn: Any) -> None:
         )
 
 
-def ensure_tagging_schema(conn: Any) -> None:
-    conn.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS tag_presets (
-              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              name TEXT NOT NULL UNIQUE,
-              slug TEXT NOT NULL UNIQUE,
-              description TEXT,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-    )
-    conn.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS tag_preset_tags (
-              preset_id UUID NOT NULL REFERENCES tag_presets(id) ON DELETE CASCADE,
-              tag_id UUID NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-              PRIMARY KEY (preset_id, tag_id)
-            )
-            """
-        )
-    )
-
-
 def ensure_module_1_preset(conn: Any) -> None:
     ensure_base_tags(conn)
-    ensure_tagging_schema(conn)
     preset = conn.execute(
         text(
             """
@@ -381,33 +360,28 @@ def _ensure_preset(conn: Any, *, name: str, slug: str, description: str, tag_slu
         )
 
 
-def _intercorso_1_tag_slugs_from_bank() -> list[str]:
-    if not INTERCORSO_1_BANK_PATH.exists():
-        return MODULE_1_TAG_SLUGS
-    try:
-        payload = json.loads(INTERCORSO_1_BANK_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return MODULE_1_TAG_SLUGS
-    questions = payload.get("questions", [])
-    if not isinstance(questions, list):
-        return MODULE_1_TAG_SLUGS
-    tags: set[str] = set()
-    for q in questions:
-        if not isinstance(q, dict):
-            continue
-        for t in q.get("tags", []):
-            tag = _slugify(str(t))
-            if tag:
-                tags.add(tag)
-    # Ensure core networking tags always included.
-    tags.update(["reti", "throughput", "ritardi-nodali", "commutazione-pacchetto", "commutazione-circuito"])
-    return sorted(tags) if tags else MODULE_1_TAG_SLUGS
+def _intercorso_1_tag_slugs(conn: Any) -> list[str]:
+    """Module 1 tags plus every tag used by the imported Intercorso 1 question bank."""
+    rows = conn.execute(
+        text(
+            """
+            SELECT DISTINCT t.slug
+            FROM question_tags qt
+            JOIN tags t ON t.id = qt.tag_id
+            JOIN questions q ON q.id = qt.question_id
+            JOIN documents d ON d.id = q.document_id
+            WHERE d.title = :title
+            """
+        ),
+        {"title": INTERCORSO_1_BANK_TITLE},
+    ).scalars()
+    core = ["reti", "throughput", "ritardi-nodali", "commutazione-pacchetto", "commutazione-circuito"]
+    return sorted({*MODULE_1_TAG_SLUGS, *core, *rows})
 
 
 def ensure_intercorso_1_preset(conn: Any) -> None:
     ensure_base_tags(conn)
-    ensure_tagging_schema(conn)
-    tag_slugs = _intercorso_1_tag_slugs_from_bank()
+    tag_slugs = _intercorso_1_tag_slugs(conn)
     _ensure_preset(
         conn,
         name=INTERCORSO_1_PRESET_NAME,
@@ -437,7 +411,6 @@ def _module_2_tag_slugs(conn: Any) -> list[str]:
 
 def ensure_module_2_preset(conn: Any) -> None:
     ensure_base_tags(conn)
-    ensure_tagging_schema(conn)
     tag_slugs = _module_2_tag_slugs(conn)
     if not tag_slugs:
         return
@@ -474,7 +447,7 @@ def set_question_tags(conn: Any, question_id: str, tags_with_score: list[tuple[s
     for slug, score in tags_with_score:
         tag_id = _get_tag_id(conn, slug)
         if tag_id is None:
-            slug_norm = _slugify(slug)
+            slug_norm = slugify(slug)
             name = slug.replace("-", " ").title()
             conn.execute(
                 text(
@@ -535,3 +508,11 @@ def auto_tag_document(conn: Any, document_id: str, use_ai: bool = False) -> dict
                 set_question_tags(conn, qid, [(t, 0.82) for t in ai_tags], source="ai")
                 ai_count += 1
     return {"questions_tagged": tagged_count, "questions_tagged_ai": ai_count}
+
+
+def seed_tags_and_presets(conn: Any) -> None:
+    """Idempotently create the built-in tags and the course presets."""
+    ensure_base_tags(conn)
+    ensure_module_1_preset(conn)
+    ensure_intercorso_1_preset(conn)
+    ensure_module_2_preset(conn)

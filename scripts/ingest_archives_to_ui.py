@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -46,13 +47,14 @@ def existing_docs_by_sha(client: httpx.Client) -> dict[str, str]:
     return out
 
 
-def run(base_url: str, zip_paths: list[Path], workdir: Path) -> dict:
+def run(base_url: str, zip_paths: list[Path], workdir: Path, admin_token: str | None = None) -> dict:
     workdir.mkdir(parents=True, exist_ok=True)
     roots = extract_archives(zip_paths, workdir)
     pdfs = collect_pdfs(roots)
     report_items: list[dict] = []
 
-    with httpx.Client(base_url=base_url, timeout=120.0) as client:
+    headers = {"X-Admin-Token": admin_token} if admin_token else {}
+    with httpx.Client(base_url=base_url, timeout=120.0, headers=headers) as client:
         client.get("/health").raise_for_status()
         _ = existing_docs_by_sha(client)
 
@@ -95,6 +97,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest PDF archives into local Examable UI/backend.")
     parser.add_argument("zips", nargs="+", type=Path)
     parser.add_argument("--base-url", default="http://localhost:8000")
+    parser.add_argument("--admin-token", default=os.environ.get("ADMIN_TOKEN"), help="Defaults to $ADMIN_TOKEN")
     parser.add_argument("--workdir", type=Path, default=Path("ingest_runs"))
     parser.add_argument("--report", type=Path, default=Path("ingest_report.json"))
     args = parser.parse_args()
@@ -103,7 +106,7 @@ def main() -> None:
         if not z.exists():
             raise SystemExit(f"Archive not found: {z}")
 
-    report = run(args.base_url, args.zips, args.workdir / "latest")
+    report = run(args.base_url, args.zips, args.workdir / "latest", admin_token=args.admin_token)
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], ensure_ascii=False))
     print(f"Report saved: {args.report}")

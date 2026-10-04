@@ -281,7 +281,7 @@ def run_pipeline(pdf_path: Path, out_dir: Path, start_page: int = 1, end_page: i
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Page-wise image AI extraction for flattened PDFs")
-    parser.add_argument("--pdf", type=str, default=str(Path(r"c:\Users\nextc\Documents\domande_intercorso_reti_banca-piatto.pdf")))
+    parser.add_argument("--pdf", type=str, required=True, help="Flattened (image-only) PDF to extract")
     parser.add_argument("--out-dir", type=str, default=str(PROJECT_ROOT))
     parser.add_argument("--start-page", type=int, default=1)
     parser.add_argument("--end-page", type=int, default=None)

@@ -1,3 +1,5 @@
+"""AI-generated corrections: background batch jobs and single-question regeneration."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +14,9 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import engine
+from app.schemas import CorrectionJobStartIn
+from app.services.errors import ConflictError, InvalidRequestError, NotFoundError, UpstreamError
+from app.services.filters import HAS_CORRECTION_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,14 @@ def _now_iso(value: Any) -> str | None:
 
 def _model_name() -> str:
     return (settings.correction_gen_model or settings.multimodal_model or "").strip() or "gpt-4.1-mini"
+
+
+JOB_COLUMNS = """
+    id, user_id, mode, document_id, status, total_questions,
+    processed_count, succeeded_count, failed_count, skipped_count,
+    current_question_id, cancel_requested, overwrite, model, batch_size,
+    error_message, started_at, finished_at, created_at
+"""
 
 
 def serialize_job(row: dict) -> dict:
@@ -674,3 +687,191 @@ def mark_orphan_running_as_interrupted() -> None:
                 """
             )
         )
+
+
+def ensure_ai_available() -> None:
+    if not settings.correction_gen_enabled:
+        raise InvalidRequestError("Correction generation is disabled (CORRECTION_GEN_ENABLED=false)")
+    if not settings.multimodal_api_key:
+        raise InvalidRequestError("Missing MULTIMODAL_API_KEY; set it in the environment")
+
+
+def _require_user(conn: Any, user_id: str) -> None:
+    if not conn.execute(text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id}).first():
+        raise NotFoundError("user not found")
+
+
+def start_job(payload: CorrectionJobStartIn) -> dict:
+    """Validate the request, insert a queued job and start it on the event loop."""
+    mode = payload.mode
+    document_id = str(payload.document_id) if payload.document_id else None
+    overwrite = bool(payload.overwrite)
+    if mode == "document" and not document_id:
+        raise InvalidRequestError("document_id required when mode='document'")
+    if mode == "frequency" and document_id:
+        raise InvalidRequestError("document_id must be null when mode='frequency'")
+    if overwrite and mode != "document":
+        raise InvalidRequestError("overwrite is only supported with mode='document'")
+    ensure_ai_available()
+
+    user_id = str(payload.user_id)
+    cap = max(0, int(settings.correction_gen_max_questions_per_job or 0))
+    with engine.begin() as conn:
+        _require_user(conn, user_id)
+        if document_id and not conn.execute(text("SELECT 1 FROM documents WHERE id = :id"), {"id": document_id}).first():
+            raise NotFoundError("document not found")
+        total = count_pending_candidates(
+            conn, user_id=user_id, mode=mode, document_id=document_id, cap=cap, overwrite=overwrite
+        )
+        if total == 0:
+            raise InvalidRequestError("No pending questions to process (all already have a correction or none match)")
+        # A partial unique index allows at most one queued/running job at a time.
+        row = conn.execute(
+            text(
+                f"""
+                INSERT INTO correction_jobs (user_id, mode, document_id, status, total_questions, model, batch_size, overwrite)
+                VALUES (:user_id, :mode, CAST(:document_id AS UUID), 'queued', :total, :model, :batch_size, :overwrite)
+                ON CONFLICT DO NOTHING
+                RETURNING {JOB_COLUMNS}
+                """
+            ),
+            {
+                "user_id": user_id,
+                "mode": mode,
+                "document_id": document_id,
+                "total": total,
+                "model": _model_name(),
+                "batch_size": max(1, int(settings.correction_gen_batch_size or 5)),
+                "overwrite": overwrite,
+            },
+        ).mappings().first()
+        if row is None:
+            running = current_job()
+            raise ConflictError({"code": "another_job_running", "job_id": running["id"] if running else None})
+
+    job = serialize_job(dict(row))
+    schedule_job(job["id"])
+    return job
+
+
+def get_job(job_id: UUID) -> dict:
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(f"SELECT {JOB_COLUMNS} FROM correction_jobs WHERE id = :id"), {"id": str(job_id)}
+        ).mappings().first()
+    if not row:
+        raise NotFoundError("job not found")
+    return serialize_job(dict(row))
+
+
+def current_job() -> dict | None:
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"""
+                SELECT {JOB_COLUMNS} FROM correction_jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+    return serialize_job(dict(row)) if row else None
+
+
+def recent_jobs(limit: int = 20) -> list[dict]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(f"SELECT {JOB_COLUMNS} FROM correction_jobs ORDER BY created_at DESC LIMIT :limit"),
+            {"limit": max(1, min(limit, 100))},
+        ).mappings()
+        return [serialize_job(dict(r)) for r in rows]
+
+
+def cancel_job(job_id: UUID) -> dict:
+    """Ask a running job to stop after its current batch; terminal jobs are returned unchanged."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"""
+                UPDATE correction_jobs SET cancel_requested = true
+                WHERE id = :id AND status IN ('queued', 'running')
+                RETURNING {JOB_COLUMNS}
+                """
+            ),
+            {"id": str(job_id)},
+        ).mappings().first()
+    return serialize_job(dict(row)) if row else get_job(job_id)
+
+
+def job_failures(job_id: UUID) -> list[dict]:
+    with engine.begin() as conn:
+        failures = conn.execute(
+            text("SELECT failures_json FROM correction_jobs WHERE id = :id"), {"id": str(job_id)}
+        ).scalar_one_or_none()
+    if failures is None:
+        raise NotFoundError("job not found")
+    out: list[dict] = []
+    for failure in failures if isinstance(failures, list) else []:
+        if not isinstance(failure, dict):
+            continue
+        try:
+            question_id = UUID(str(failure.get("question_id")))
+        except ValueError:
+            continue
+        out.append(
+            {
+                "question_id": question_id,
+                "error": str(failure.get("error", ""))[:500],
+                "stem_preview": str(failure.get("stem_preview", ""))[:240],
+            }
+        )
+    return out
+
+
+def coverage(user_id: UUID, document_id: UUID | None = None) -> dict:
+    """How many non-discarded questions already have a correction for the user."""
+    params: dict[str, Any] = {"user_id": str(user_id), "document_id": str(document_id) if document_id else None}
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"""
+                SELECT
+                  COUNT(*)::INTEGER AS total,
+                  COUNT(*) FILTER (WHERE {HAS_CORRECTION_SQL})::INTEGER AS with_correction
+                FROM questions q
+                LEFT JOIN question_corrections qc ON qc.question_id = q.id AND qc.user_id = :user_id
+                WHERE q.is_discarded = false
+                  AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+                """
+            ),
+            params,
+        ).mappings().one()
+    return {
+        "total": row["total"],
+        "with_correction": row["with_correction"],
+        "without_correction": row["total"] - row["with_correction"],
+    }
+
+
+async def regenerate_for_user(*, user_id: UUID, question_id: UUID) -> dict:
+    """Synchronously regenerate (overwrite) one question's AI correction."""
+    ensure_ai_available()
+    with engine.begin() as conn:
+        _require_user(conn, str(user_id))
+    try:
+        result = await regenerate_single(user_id=str(user_id), question_id=str(question_id))
+    except ValueError as exc:
+        raise NotFoundError(str(exc)) from exc
+    except Exception as exc:
+        raise UpstreamError(f"AI regeneration failed: {exc}") from exc
+    if not result.get("saved"):
+        raise UpstreamError("L'AI non ha prodotto una risposta utilizzabile per questa domanda.")
+    return {
+        "question_id": str(question_id),
+        "user_id": str(user_id),
+        "correct_option_id": result.get("correct_option_id"),
+        "explanation_text": result.get("explanation_text"),
+        "answer_payload": {},
+        "has_correction": True,
+    }
