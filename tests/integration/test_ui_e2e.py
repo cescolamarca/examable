@@ -76,12 +76,19 @@ def test_upload_curate_and_study(page, server: str, sample_exams: tuple[Path, Pa
     for _ in range(20):
         if page.locator(".summary").count():
             break
+        counter = page.locator(".session__counter").inner_text()
         if page.locator(".option:not([disabled])").count():
             page.keyboard.press("b")
-        elif page.locator("[data-action='reveal']").count():
-            page.keyboard.press("Enter")
-            page.keyboard.press("1")
-        page.locator("[data-action='next']:not([disabled])").first.click()
+        else:
+            page.locator("[data-action='reveal']").click()
+            page.locator("[data-action='knew']").click()
+        page.locator("[data-action='next']:not([disabled])").filter(has_text="→").click()
+        # The next question renders asynchronously: wait for it before inspecting the page.
+        page.wait_for_function(
+            "previous => !document.querySelector('.session__counter')"
+            " || document.querySelector('.session__counter').textContent !== previous",
+            arg=counter,
+        )
     expect(page.locator(".summary h1")).to_contain_text("giuste")
 
     # The simulation is in the history with its score.

@@ -810,7 +810,10 @@ function renderQuestion(top, question, correction) {
         ? html`<button class="btn btn--secondary" data-action="next">${lastOfSimulation ? "Vedi risultati" : "Salta"}</button>`
         : ""}`;
   } else if (!isMcq && !answered) {
-    primary = html`<button class="btn" data-action="reveal">Mostra soluzione <kbd>↵</kbd></button>`;
+    primary = html`${session.kind === "simulation"
+        ? html`<button class="btn btn--ghost" data-action="next">${lastOfSimulation ? "Vedi risultati" : "Salta"}</button>`
+        : ""}
+      <button class="btn" data-action="reveal">Mostra soluzione <kbd>↵</kbd></button>`;
   } else {
     const label = lastOfSimulation || lastOfReview ? "Vedi risultati" : "Prossima";
     const waiting = !isMcq && answered && !answered.selfAssessed;
