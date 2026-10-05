@@ -64,3 +64,8 @@ def get_review_stats(
     return study.correction_stats(
         user_id, document_id=document_id, tag=tag, tag_preset=tag_preset, question_type=question_type
     )
+
+
+@router.get("/study/summary/{user_id}")
+def get_study_summary(user_id: UUID, document_id: UUID | None = None, tag_preset: str | None = None) -> dict:
+    return study.summary(user_id, document_id=document_id, tag_preset=tag_preset)

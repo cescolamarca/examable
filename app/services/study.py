@@ -17,6 +17,8 @@ from app.services.scheduler import ReviewState
 
 DEFAULT_USER_EMAIL = "local@examable.internal"
 MAX_EXCLUDED_IDS = 400
+# A question whose SM-2 interval reached three weeks counts as learned.
+MASTERED_INTERVAL_DAYS = 21
 
 
 def get_or_create_default_user() -> dict[str, Any]:
@@ -145,7 +147,7 @@ def study_filter(
     where = filters.WhereBuilder("q.is_discarded = false")
     where.params["user_id"] = str(user_id)
     if document_id is not None:
-        where.add("q.document_id = :document_id", document_id=str(document_id))
+        where.add(filters.appears_in_documents("document_ids"), document_ids=[str(document_id)])
     if question_type:
         where.add("q.question_type = :question_type", question_type=question_type.strip())
     if exclude_ids:
@@ -319,4 +321,56 @@ def correction_stats(
         "with_correct_option": row["with_correct_option"],
         "with_explanation": row["with_explanation"],
         "coverage_ratio": row["with_correction"] / total if total else 0.0,
+    }
+
+
+def summary(user_id: UUID, *, document_id: UUID | None = None, tag_preset: str | None = None) -> dict[str, Any]:
+    """What the study home needs: due reviews, unseen questions, progress and today's activity."""
+    where = study_filter(user_id=user_id, document_id=document_id, tag_preset=tag_preset)
+    with engine.begin() as conn:
+        row = (
+            conn.execute(
+                text(
+                    f"""
+                SELECT
+                  COUNT(*)::INTEGER AS total,
+                  COUNT(*) FILTER (WHERE s.question_id IS NULL OR s.state = 'new')::INTEGER AS new,
+                  COUNT(*) FILTER (WHERE s.state <> 'new' AND s.due_at <= now())::INTEGER AS due,
+                  COUNT(*) FILTER (WHERE s.interval_days >= :mastered_days)::INTEGER AS mastered,
+                  COUNT(*) FILTER (WHERE {filters.HAS_CORRECTION_SQL})::INTEGER AS with_correction,
+                  MIN(s.due_at) FILTER (WHERE s.state <> 'new' AND s.due_at > now()) AS next_due_at
+                FROM questions q
+                LEFT JOIN schedule_state s ON s.question_id = q.id AND s.user_id = :user_id
+                LEFT JOIN question_corrections qc ON qc.question_id = q.id AND qc.user_id = :user_id
+                WHERE {where.sql}
+                """
+                ),
+                {**where.params, "mastered_days": MASTERED_INTERVAL_DAYS},
+            )
+            .mappings()
+            .one()
+        )
+        today = (
+            conn.execute(
+                text(
+                    """
+                SELECT COUNT(*)::INTEGER AS answered, COUNT(*) FILTER (WHERE is_correct)::INTEGER AS correct
+                FROM attempts
+                WHERE user_id = :user_id AND answered_at >= date_trunc('day', now())
+                """
+                ),
+                {"user_id": str(user_id)},
+            )
+            .mappings()
+            .one()
+        )
+    return {
+        "total": row["total"],
+        "due": row["due"],
+        "new": row["new"],
+        "mastered": row["mastered"],
+        "with_correction": row["with_correction"],
+        "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
+        "answered_today": today["answered"],
+        "correct_today": today["correct"],
     }

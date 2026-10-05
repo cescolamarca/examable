@@ -20,9 +20,16 @@ def list_documents(limit: int = 100) -> list[dict]:
         rows = conn.execute(
             text(
                 """
-                SELECT id, title, ingestion_status, pages, created_at, processed_at, ingestion_error
-                FROM documents
-                ORDER BY created_at DESC
+                SELECT
+                  d.id, d.title, d.ingestion_status, d.pages, d.created_at, d.processed_at, d.ingestion_error,
+                  (
+                    SELECT COUNT(DISTINCT occ.question_id)
+                    FROM question_occurrences occ
+                    JOIN questions q ON q.id = occ.question_id AND q.is_discarded = false
+                    WHERE occ.document_id = d.id
+                  ) AS questions_count
+                FROM documents d
+                ORDER BY d.created_at DESC
                 LIMIT :limit
                 """
             ),
@@ -50,7 +57,10 @@ def list_document_questions(
             text(
                 QUESTION_SELECT
                 + """
-                WHERE q.document_id = :document_id
+                WHERE EXISTS (
+                    SELECT 1 FROM question_occurrences occ
+                    WHERE occ.question_id = q.id AND occ.document_id = :document_id
+                  )
                   AND (CAST(:question_type AS TEXT) IS NULL OR q.question_type = :question_type)
                   AND (:include_discarded OR q.is_discarded = false)
                 ORDER BY q.section, q.number_in_section

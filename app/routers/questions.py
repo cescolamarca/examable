@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -17,7 +17,7 @@ from app.schemas import (
 from app.security import require_admin
 from app.services import corrections
 from app.services.errors import InvalidRequestError, NotFoundError
-from app.services.questions import QUESTION_SELECT, question_detail
+from app.services.questions import QUESTION_SELECT, question_detail, search_bank
 from app.services.tagging import manual_tag_slug
 
 router = APIRouter(prefix="/questions", tags=["questions"])
@@ -30,6 +30,38 @@ def _iso(value: Any) -> str | None:
 def _require_question(conn: Any, question_id: UUID) -> None:
     if not conn.execute(text("SELECT 1 FROM questions WHERE id = :id"), {"id": str(question_id)}).first():
         raise NotFoundError("Question not found")
+
+
+@router.get("")
+def search_questions(
+    user_id: UUID | None = None,
+    search: str | None = None,
+    document_id: UUID | None = None,
+    tag: str | None = None,
+    tag_preset: str | None = None,
+    question_type: str | None = None,
+    correction: Literal["with", "without"] | None = None,
+    include_discarded: bool = False,
+    only_discarded: bool = False,
+    sort: Literal["frequency", "recent", "position"] = "frequency",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Search the whole bank; with `user_id`, each item carries that user's answer key."""
+    return search_bank(
+        user_id=user_id,
+        search=search,
+        document_id=document_id,
+        tag=tag,
+        tag_preset=tag_preset,
+        question_type=question_type,
+        correction=correction,
+        include_discarded=include_discarded,
+        only_discarded=only_discarded,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{question_id}")

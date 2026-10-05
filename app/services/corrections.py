@@ -80,7 +80,13 @@ def count_pending_candidates(
             SELECT COUNT(*) AS n
             FROM questions q
             WHERE q.is_discarded = false
-              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+              AND (
+                CAST(:document_id AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM question_occurrences occ
+                  WHERE occ.question_id = q.id AND occ.document_id = CAST(:document_id AS UUID)
+                )
+              )
             """
         )
     else:
@@ -94,7 +100,13 @@ def count_pending_candidates(
               AND (qc.correct_option_id IS NULL)
               AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
               AND COALESCE(qc.answer_payload, '{}'::jsonb) = '{}'::jsonb
-              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+              AND (
+                CAST(:document_id AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM question_occurrences occ
+                  WHERE occ.question_id = q.id AND occ.document_id = CAST(:document_id AS UUID)
+                )
+              )
             """
         )
     n = conn.execute(sql, {"user_id": user_id, "document_id": document_id}).scalar_one()
@@ -125,7 +137,13 @@ def _fetch_batch(
             SELECT q.id, q.question_type, q.stem, q.options_json, q.subparts_json
             FROM questions q
             WHERE q.is_discarded = false
-              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+              AND (
+                CAST(:document_id AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM question_occurrences occ
+                  WHERE occ.question_id = q.id AND occ.document_id = CAST(:document_id AS UUID)
+                )
+              )
             ORDER BY {order_sql}
             OFFSET :offset
             LIMIT :batch_size
@@ -142,7 +160,13 @@ def _fetch_batch(
               AND (qc.correct_option_id IS NULL)
               AND COALESCE(NULLIF(BTRIM(qc.explanation_text), ''), '') = ''
               AND COALESCE(qc.answer_payload, '{{}}'::jsonb) = '{{}}'::jsonb
-              AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+              AND (
+                CAST(:document_id AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM question_occurrences occ
+                  WHERE occ.question_id = q.id AND occ.document_id = CAST(:document_id AS UUID)
+                )
+              )
             ORDER BY {order_sql}
             LIMIT :batch_size
             """
@@ -865,7 +889,13 @@ def coverage(user_id: UUID, document_id: UUID | None = None) -> dict:
                 FROM questions q
                 LEFT JOIN question_corrections qc ON qc.question_id = q.id AND qc.user_id = :user_id
                 WHERE q.is_discarded = false
-                  AND (CAST(:document_id AS UUID) IS NULL OR q.document_id = CAST(:document_id AS UUID))
+                  AND (
+                CAST(:document_id AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1 FROM question_occurrences occ
+                  WHERE occ.question_id = q.id AND occ.document_id = CAST(:document_id AS UUID)
+                )
+              )
                 """
                 ),
                 params,

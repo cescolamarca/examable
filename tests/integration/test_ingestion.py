@@ -45,9 +45,10 @@ def test_process_extracts_every_question_type(client: TestClient, sample_exams: 
 
 def test_repeated_questions_are_merged_across_sessions(client: TestClient, ingested: tuple[str, str]) -> None:
     first, second = ingested
-    total = len(_questions(client, first)) + len(_questions(client, second))
-    # 5 + 4 extracted questions, two of which appear in both sessions.
-    assert total == 7
+    # Each session lists all its questions: 5 + 4, two of which appear in both sessions...
+    assert (len(_questions(client, first)), len(_questions(client, second))) == (5, 4)
+    # ...but the bank stores them once.
+    assert client.get("/questions").json()["total"] == 7
 
     report = client.get("/reports/question-occurrences").json()
     repeated = [item for item in report["items"] if item["occurrences_count"] == 2]
@@ -120,7 +121,8 @@ def test_deleting_a_session_keeps_questions_shared_with_other_sessions(
 def test_reprocessing_a_session_is_idempotent(client: TestClient, ingested: tuple[str, str]) -> None:
     first, second = ingested
     assert client.post(f"/documents/{first}/process").status_code == 200
-    assert len(_questions(client, first)) + len(_questions(client, second)) == 7
+    assert (len(_questions(client, first)), len(_questions(client, second))) == (5, 4)
+    assert client.get("/questions").json()["total"] == 7
     report = client.get("/reports/question-occurrences").json()
     assert sorted(i["occurrences_count"] for i in report["items"]) == [1, 1, 1, 1, 1, 2, 2]
 

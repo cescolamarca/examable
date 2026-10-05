@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Banca domande{% endblock %}
+{% block script %}bank{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Banca domande</h1>
+    <p id="bank-subtitle">Tutte le domande estratte dagli appelli, una volta sola anche se ripetute.</p>
+  </div>
+</header>
+
+<form class="toolbar" id="filters" role="search" onsubmit="return false">
+  <input class="input input--search" type="search" name="q" placeholder="Cerca nel testo, nelle opzioni o nei sottopunti" aria-label="Cerca" />
+  <select class="select" name="doc" aria-label="Documento"><option value="">Tutti i documenti</option></select>
+  <select class="select" name="preset" aria-label="Modulo"><option value="">Tutti i moduli</option></select>
+  <select class="select" name="type" aria-label="Tipo">
+    <option value="">Tutti i tipi</option>
+    <option value="multiple_choice">Scelta multipla</option>
+    <option value="open_text">Domande aperte</option>
+    <option value="multi_part_open">Esercizi</option>
+  </select>
+</form>
+
+<div class="bank-meta">
+  <div class="segmented" id="key-filter" role="group" aria-label="Risposta salvata">
+    <button type="button" data-value="" aria-pressed="true">Tutte</button>
+    <button type="button" data-value="without" aria-pressed="false">Senza risposta</button>
+    <button type="button" data-value="with" aria-pressed="false">Con risposta</button>
+    <button type="button" data-value="discarded" aria-pressed="false">Segnalate</button>
+  </div>
+  <div class="row">
+    <span class="muted small" id="result-count" aria-live="polite"></span>
+    <select class="select" id="sort" style="width: auto" aria-label="Ordina">
+      <option value="frequency">Più frequenti</option>
+      <option value="recent">Più recenti</option>
+      <option value="position">Per documento</option>
+    </select>
+  </div>
+</div>
+
+<div id="results" aria-busy="true"></div>
+<div class="pager"><button class="btn btn--secondary" id="more" hidden>Mostra altre</button></div>
+{% endblock %}
