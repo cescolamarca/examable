@@ -53,7 +53,7 @@ def _pool_filter(payload: CustomSimulationIn) -> filters.WhereBuilder:
 
     sources: list[str] = []
     if document_ids:
-        sources.append("q.document_id = ANY(CAST(:source_document_ids AS UUID[]))")
+        sources.append(filters.appears_in_documents("source_document_ids"))
         where.params["source_document_ids"] = document_ids
     preset_fragment = filters.any_tag_preset(presets, param_prefix="source_preset")
     if preset_fragment:

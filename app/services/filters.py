@@ -80,6 +80,18 @@ def any_tag_preset(values: list[str], *, param_prefix: str = "preset") -> SqlFra
     return sql, params
 
 
+def appears_in_documents(param: str) -> str:
+    """Question occurs in one of the documents bound to `param` (a list of ids).
+
+    After deduplication a question is owned by a single document but can occur in
+    several, so filters by document must look at occurrences, not ownership.
+    """
+    return f"""EXISTS (
+      SELECT 1 FROM question_occurrences occ
+      WHERE occ.question_id = q.id AND occ.document_id = ANY(CAST(:{param} AS UUID[]))
+    )"""
+
+
 def has_correction(*, user_param: str, negate: bool = False) -> str:
     """Question has (or, with `negate`, lacks) a usable correction for the user bound to `user_param`."""
     sql = f"""EXISTS (

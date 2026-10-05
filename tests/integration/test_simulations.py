@@ -25,13 +25,16 @@ def test_simulation_requires_at_least_one_question(client: TestClient, ingested:
 def test_exhaustive_simulation_filtered_by_document(
     client: TestClient, ingested: tuple[str, str], user_id: str
 ) -> None:
-    first, _ = ingested
+    _, second = ingested
     body = client.post(
         "/simulations/custom",
-        json={"user_id": user_id, "exhaustive": True, "document_ids": [first], "randomize": False},
+        json={"user_id": user_id, "exhaustive": True, "document_ids": [second], "randomize": False},
     ).json()
-    assert body["generated_total"] == len(client.get(f"/documents/{first}/questions").json())
-    assert {q["document_id"] for q in body["questions"]} == {first}
+    # Session B contains 4 questions; 2 of them are owned by session A after deduplication.
+    assert body["generated_total"] == 4
+    assert {q["id"] for q in body["questions"]} == {
+        q["id"] for q in client.get(f"/documents/{second}/questions").json()
+    }
 
 
 def test_tag_filter_accepts_comma_separated_values(client: TestClient, ingested: tuple[str, str], user_id: str) -> None:

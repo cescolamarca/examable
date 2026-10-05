@@ -1,224 +1,123 @@
-<!doctype html>
-<html lang="it">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Examable - Studio</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-  </head>
-  <body>
-    <header class="topbar">
-      <div class="container topbar-inner">
-        <div class="brand">Examable</div>
-        <nav class="topnav">
-          <a class="nav-link active" href="/study">Studio</a>
-          <a class="nav-link" href="/ingest">Gestione</a>
-        </nav>
-        <div class="topbar-meta">
-          <span><span id="review-kpi-total" class="kpi-num">0</span> dom.</span>
-          <span><span id="review-kpi-unreviewed" class="kpi-warn">0</span> da fare</span>
-          <span id="review-kpi-correct" class="hidden">0</span>
-          <span id="review-kpi-wrong" class="hidden">0</span>
+{% extends "base.html" %}
+{% block title %}Studio{% endblock %}
+{% block script %}study{% endblock %}
+{% block content %}
+<div id="home">
+  <header class="page-header">
+    <div>
+      <h1>Studio</h1>
+      <p>Ripassa ogni giorno ciò che stai per dimenticare, poi mettiti alla prova con una simulazione.</p>
+    </div>
+  </header>
+
+  <section class="study-hero" aria-label="Ripasso e progressi">
+    <article class="card review-card" id="review-card" aria-busy="true">
+      <div class="skeleton" style="height: 22px; width: 40%"></div>
+      <div class="skeleton" style="height: 48px; width: 55%"></div>
+      <div class="skeleton" style="height: 40px"></div>
+    </article>
+    <article class="card stack" id="progress-card" aria-busy="true">
+      <div class="skeleton" style="height: 22px; width: 50%"></div>
+      <div class="skeleton" style="height: 120px"></div>
+    </article>
+  </section>
+
+  <div class="section-title">
+    <h2>Simulazioni</h2>
+    <span class="muted small" id="sim-scope"></span>
+  </div>
+  <div class="quick-sims" id="quick-sims">
+    <button class="quick-sim" data-preset="exam">
+      <span class="quick-sim__icon" aria-hidden="true">⏱</span>
+      <strong>Simulazione d'esame</strong>
+      <span>10 a scelta multipla e 2 aperte, distribuite sugli argomenti</span>
+    </button>
+    <button class="quick-sim" data-preset="weak">
+      <span class="quick-sim__icon" aria-hidden="true">🎯</span>
+      <strong>Punti deboli</strong>
+      <span>Le 15 domande che sbagli più spesso</span>
+    </button>
+    <button class="quick-sim" data-preset="unseen">
+      <span class="quick-sim__icon" aria-hidden="true">✨</span>
+      <strong>Mai viste</strong>
+      <span>15 domande che non hai ancora affrontato</span>
+    </button>
+  </div>
+
+  <details class="card" id="builder" style="margin-bottom: 28px">
+    <summary class="row row--between" style="cursor: pointer; list-style: none">
+      <div>
+        <h3>Simulazione personalizzata</h3>
+        <p class="muted small">Scegli quante domande, da quali documenti o moduli e con quale priorità.</p>
+      </div>
+      <span class="btn btn--secondary btn--sm" aria-hidden="true">Configura</span>
+    </summary>
+    <form class="builder" id="builder-form" style="margin-top: 20px">
+      <div class="builder__row">
+        <span class="field__label">Quante domande</span>
+        <div class="stack">
+          <div class="counts" id="counts">
+            <label class="count">
+              <span class="stepper"><button type="button" data-step="-1" aria-label="Meno">−</button><input
+                  name="multiple_choice_count" type="number" min="0" max="200" value="10" aria-label="Scelta multipla" /><button
+                  type="button" data-step="1" aria-label="Più">+</button></span>
+              Scelta multipla
+            </label>
+            <label class="count">
+              <span class="stepper"><button type="button" data-step="-1" aria-label="Meno">−</button><input
+                  name="open_text_count" type="number" min="0" max="200" value="2" aria-label="Domande aperte" /><button
+                  type="button" data-step="1" aria-label="Più">+</button></span>
+              Aperte
+            </label>
+            <label class="count">
+              <span class="stepper"><button type="button" data-step="-1" aria-label="Meno">−</button><input
+                  name="multi_part_open_count" type="number" min="0" max="200" value="0" aria-label="Esercizi" /><button
+                  type="button" data-step="1" aria-label="Più">+</button></span>
+              Esercizi
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" name="exhaustive" /> Tutte le domande che corrispondono ai filtri</label>
         </div>
       </div>
-    </header>
-
-    <main class="container page">
-      <div class="study-tabs">
-        <button id="tab-btn-prep" class="active" onclick="switchStudyTab('prep')">Revisione</button>
-        <button id="tab-btn-sim" onclick="switchStudyTab('sim')">Simulazione</button>
-        <button id="tab-btn-wrong" onclick="switchStudyTab('wrong')" class="hidden">Errori <span id="wrong-count-badge" class="pill counter">0</span></button>
-        <button id="tab-btn-history" onclick="switchStudyTab('history')">Cronologia simulazioni</button>
-      </div>
-
-      <!-- TAB: Revisione -->
-      <div id="tab-prep" class="tab-pane active">
-        <div class="filter-bar">
-          <select id="study-filter-document-id">
-            <option value="">Tutti i documenti</option>
-          </select>
-          <select id="study-filter-tag-preset">
-            <option value="">Nessun preset</option>
-          </select>
-          <select id="study-filter-question-type">
-            <option value="">Tutti i tipi</option>
-            <option value="multiple_choice">Scelta multipla</option>
-            <option value="open_text">Risposta aperta</option>
-            <option value="multi_part_open">Multi-parte</option>
-          </select>
-          <select id="study-filter-review-mode">
-            <option value="all">Tutte</option>
-            <option value="unreviewed" selected>Senza correzione</option>
-            <option value="with_correction">Con correzione</option>
-          </select>
-          <input id="study-filter-tag" type="text" class="visually-hidden" placeholder="tag" />
-          <button id="apply-study-filters" class="btn-sm">Applica</button>
-          <button id="refresh-review-stats" class="btn-icon secondary" title="Aggiorna statistiche">↺</button>
-        </div>
-        <div class="filter-status-row">
-          <span id="study-status" class="muted small"></span>
-          <span id="study-counter" class="pill counter">0✓ / 0✗</span>
-          <button id="reset-study-counter" class="btn-ghost">Reset</button>
-          <button id="toggle-shuffle-new" class="btn-ghost" aria-pressed="false">Mischia: off</button>
-        </div>
-
-        <div id="study-question" class="study-box"></div>
-
-        <div class="nav-row">
-          <button id="prev-study-question" class="secondary">← Precedente</button>
-          <button id="next-study-question">Prossima →</button>
+      <div class="builder__row">
+        <span class="field__label">Documenti</span>
+        <div class="stack">
+          <div class="chips" id="doc-chips" role="group" aria-label="Documenti"></div>
+          <span class="subtle small">Nessuna selezione = tutti i documenti.</span>
         </div>
       </div>
-
-      <!-- TAB: Simulazione -->
-      <div id="tab-sim" class="tab-pane">
-        <div class="sim-config-bar">
-          <div class="sim-count-group">
-            <label>MC <input id="sim-mcq-count" type="number" value="10" min="0" max="200" /></label>
-            <label>Aperte <input id="sim-open-count" type="number" value="5" min="0" max="200" /></label>
-            <label>Multi <input id="sim-multi-count" type="number" value="0" min="0" max="200" /></label>
-          </div>
-          <select id="sim-document-ids" multiple size="4" title="Tieni premuto Ctrl/Cmd per selezionare più documenti">
-          </select>
-          <select id="sim-tag-presets" multiple size="4" title="Tieni premuto Ctrl/Cmd per selezionare più preset">
-          </select>
-          <input id="sim-tag" type="text" class="visually-hidden" placeholder="tag" />
-          <select id="sim-priority-mode" title="Priorità domande">
-            <option value="none">Ordine standard</option>
-            <option value="never_viewed">Priorità: mai viste</option>
-            <option value="frequently_mistaken">Priorità: più sbagliate</option>
-          </select>
-          <label class="inline-check">
-            <input id="sim-randomize" type="checkbox" checked />
-            <span>Ordine casuale</span>
-          </label>
-          <label class="inline-check">
-            <input id="sim-only-reviewed-correct" type="checkbox" checked />
-            <span>Solo corrette</span>
-          </label>
-          <button id="generate-simulation">Genera simulazione</button>
-          <button id="generate-exhaustive" class="secondary">Esaustiva</button>
-          <span id="simulation-status" class="muted small"></span>
+      <div class="builder__row" id="preset-row">
+        <span class="field__label">Moduli</span>
+        <div class="chips" id="preset-chips" role="group" aria-label="Moduli"></div>
+      </div>
+      <div class="builder__row">
+        <span class="field__label">Priorità</span>
+        <div class="segmented" id="priority" role="group" aria-label="Priorità">
+          <button type="button" data-value="none" aria-pressed="true">Bilanciata per argomento</button>
+          <button type="button" data-value="never_viewed" aria-pressed="false">Mai viste prima</button>
+          <button type="button" data-value="frequently_mistaken" aria-pressed="false">Più sbagliate</button>
         </div>
-
-        <section class="immersion-shell">
-          <header class="immersion-topbar">
-            <div class="immersion-brand">
-              <span id="immersion-session-title" class="immersion-session">Sessione immersiva</span>
-            </div>
-            <div class="immersion-topbar-actions">
-              <div class="immersion-progress-numbers">
-                <span class="immersion-progress-label">Domanda</span>
-                <span id="immersion-progress-text" class="immersion-progress-value">0/0</span>
-              </div>
-              <button id="immersion-finish" class="secondary">Chiudi sessione</button>
-            </div>
-          </header>
-
-          <div class="immersion-progress-track">
-            <div id="immersion-progress-bar" class="immersion-progress-fill" style="width: 0%"></div>
-          </div>
-
-          <main class="immersion-main">
-            <section class="immersion-question">
-              <div class="immersion-question-head">
-                <span id="immersion-question-tag" class="immersion-chip">Simulazione</span>
-                <span id="immersion-question-flag"></span>
-              </div>
-              <h2 id="immersion-question-text">
-                Genera una simulazione per iniziare la modalità full immersion.
-              </h2>
-            </section>
-
-            <section id="immersion-options" class="immersion-options">
-              <button type="button" class="immersion-option" disabled>
-                <span class="immersion-option-letter">A</span>
-                <span class="immersion-option-body">
-                  <strong>Pronto a iniziare</strong>
-                  <span>Configura i parametri sopra e premi "Genera simulazione".</span>
-                </span>
-              </button>
-            </section>
-
-            <section id="immersion-feedback" class="immersion-feedback hidden" aria-live="polite">
-              <div class="immersion-feedback-icon">✓</div>
-              <div>
-                <h3 id="immersion-feedback-title">Feedback</h3>
-                <p id="immersion-feedback-body"></p>
-              </div>
-            </section>
-
-            <footer class="immersion-footer">
-              <span id="immersion-score" class="pill counter">Punteggio: 0 corrette / 0 sbagliate</span>
-              <div class="row">
-                <button id="simulation-prev" class="secondary">Precedente</button>
-                <button id="immersion-next">Prossima domanda</button>
-                <button id="simulation-next" class="secondary">Successiva</button>
-              </div>
-              <span id="simulation-progress" class="muted small"></span>
-            </footer>
-          </main>
-
-          <div class="immersion-orb immersion-orb-left" aria-hidden="true"></div>
-          <div class="immersion-orb immersion-orb-right" aria-hidden="true"></div>
-        </section>
       </div>
-
-      <!-- TAB: Errori -->
-      <div id="tab-wrong" class="tab-pane">
-        <section class="card soft-white">
-          <span class="section-kicker">Revisione Errori</span>
-          <h2>Domande sbagliate nella simulazione</h2>
-          <p class="muted small">Rivedi tutte le domande a cui hai risposto in modo errato o per cui mancava la correzione.</p>
-          <div class="row" style="margin-top:8px;">
-            <button id="wrong-create-sim" class="primary hidden">▶️ Crea simulazione con questi errori</button>
-          </div>
-          <p class="muted small hidden" id="wrong-create-sim-status"></p>
-          <div id="wrong-answers-list" class="stack-lg" style="margin-top:16px;"></div>
-          <div id="wrong-answers-empty" class="empty-state hidden">
-            <div class="empty-icon">🎉</div>
-            <h3>Nessun errore!</h3>
-            <p>Non hai ancora domande errate in questa sessione.</p>
-          </div>
-        </section>
+      <div class="builder__row">
+        <span class="field__label">Opzioni</span>
+        <div class="stack">
+          <label class="check"><input type="checkbox" name="randomize" checked /> Mescola l'ordine delle domande</label>
+          <label class="check"><input type="checkbox" name="only_reviewed_correct" /> Solo domande con risposta salvata</label>
+        </div>
       </div>
-
-      <!-- TAB: Cronologia simulazioni -->
-      <div id="tab-history" class="tab-pane">
-        <section class="card soft-white">
-          <span class="section-kicker">Cronologia</span>
-          <h2>Simulazioni generate</h2>
-          <p class="muted small">Rivedi le simulazioni generate in precedenza e le risposte date.</p>
-          <div id="simulation-history-list" class="stack-lg" style="margin-top:16px;"></div>
-          <div id="simulation-history-empty" class="empty-state hidden">
-            <div class="empty-icon">🗒️</div>
-            <h3>Nessuna simulazione</h3>
-            <p>Genera una simulazione dalla scheda "Simulazione" per vederla qui.</p>
-          </div>
-          <div id="simulation-review" class="stack-lg" style="margin-top:16px;"></div>
-        </section>
+      <div class="row">
+        <button class="btn btn--lg" type="submit">Inizia simulazione</button>
       </div>
-    </main>
+    </form>
+  </details>
 
-    <script>
-      function switchStudyTab(tabId) {
-        document.getElementById('tab-prep').classList.remove('active');
-        document.getElementById('tab-sim').classList.remove('active');
-        document.getElementById('tab-wrong').classList.remove('active');
-        document.getElementById('tab-history').classList.remove('active');
-        document.getElementById('tab-btn-prep').classList.remove('active');
-        document.getElementById('tab-btn-sim').classList.remove('active');
-        document.getElementById('tab-btn-wrong').classList.remove('active');
-        document.getElementById('tab-btn-history').classList.remove('active');
+  <div class="section-title">
+    <h2>Simulazioni recenti</h2>
+  </div>
+  <section class="card card--flush" id="history" aria-busy="true">
+    <div class="empty"><div class="skeleton" style="height: 18px; width: 60%"></div></div>
+  </section>
+</div>
 
-        document.getElementById('tab-' + tabId).classList.add('active');
-        document.getElementById('tab-btn-' + tabId).classList.add('active');
-
-        if (tabId === 'history' && typeof loadSimulationHistory === 'function') {
-          loadSimulationHistory();
-        }
-      }
-    </script>
-    <script src="/static/study.js"></script>
-  </body>
-</html>
+<div id="session" class="session" hidden></div>
+{% endblock %}

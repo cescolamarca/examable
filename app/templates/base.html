@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{% block title %}Examable{% endblock %} · Examable</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234058e6'/><path d='M10 9h12v3H13.5v2.5H21v3h-7.5V20H22v3H10z' fill='white'/></svg>" />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body data-page="{{ page }}">
+    <a class="skip-link" href="#main">Vai al contenuto</a>
+    <header class="app-header">
+      <div class="container app-header__inner">
+        <a class="brand" href="/" aria-label="Examable, home">
+          <span class="brand__mark" aria-hidden="true">E</span>
+          <span class="brand__name">Examable</span>
+        </a>
+        <nav class="app-nav" aria-label="Sezioni">
+          <a href="/" class="app-nav__link" {% if page == "study" %}aria-current="page"{% endif %}>Studio</a>
+          <a href="/bank" class="app-nav__link" {% if page == "bank" %}aria-current="page"{% endif %}>Banca domande</a>
+          <a href="/ingest" class="app-nav__link" {% if page == "documents" %}aria-current="page"{% endif %}>Documenti</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main" class="container page">
+      {% block content %}{% endblock %}
+    </main>
+
+    <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="false"></div>
+    <script type="module" src="/static/js/{% block script %}{% endblock %}.js"></script>
+  </body>
+</html>

@@ -49,6 +49,8 @@ jobs:
       - name: Install OCR tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-ita
       - run: pip install -r requirements-dev.txt
+      - name: Install Chromium for the browser test
+        run: python -m playwright install --with-deps chromium
       - name: Run tests
         run: pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=85
       - uses: actions/upload-artifact@v4

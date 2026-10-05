@@ -15,9 +15,14 @@ templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "
 @router.get("/", response_class=HTMLResponse)
 @router.get("/study", response_class=HTMLResponse)
 def study_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "study.html")
+    return templates.TemplateResponse(request, "study.html", {"page": "study"})
 
 
 @router.get("/ingest", response_class=HTMLResponse)
 def ingest_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "ingest.html")
+    return templates.TemplateResponse(request, "documents.html", {"page": "documents"})
+
+
+@router.get("/bank", response_class=HTMLResponse)
+def bank_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "bank.html", {"page": "bank"})

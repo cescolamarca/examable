@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Documenti{% endblock %}
+{% block script %}documents{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Documenti</h1>
+    <p>Carica i PDF degli appelli: testo, scansioni e foto vengono letti, divisi in domande e uniti a quelle già presenti.</p>
+  </div>
+</header>
+
+<section class="stack-lg">
+  <div>
+    <label class="dropzone" id="dropzone" for="file-input">
+      <span class="dropzone__icon" aria-hidden="true">⇪</span>
+      <strong>Trascina qui i PDF o clicca per sceglierli</strong>
+      <span class="small">Puoi caricarne più di uno insieme · massimo 25 MB ciascuno</span>
+      <input id="file-input" type="file" accept="application/pdf,.pdf" multiple class="visually-hidden" />
+    </label>
+    <div class="uploads" id="uploads" aria-live="polite"></div>
+  </div>
+
+  <div class="stats" id="stats" aria-label="Riepilogo"></div>
+
+  <section class="card card--flush">
+    <div class="card__header" style="padding: 18px 20px 0">
+      <div>
+        <h2>Documenti caricati</h2>
+        <p class="muted small">Le domande che compaiono in più appelli sono contate in ciascuno.</p>
+      </div>
+    </div>
+    <div class="table-wrap" id="documents" aria-busy="true"></div>
+  </section>
+
+  <section class="card" id="ai-card">
+    <div class="ai-panel">
+      <div>
+        <h2>Risposte con l'AI</h2>
+        <p class="muted small" style="margin-top: 4px">
+          Genera la risposta corretta e una spiegazione per le domande che ne sono prive, partendo da quelle che
+          compaiono più spesso. Le risposte che hai scritto tu non vengono mai sovrascritte.
+        </p>
+        <div class="row" style="margin-top: 12px">
+          <div class="progress progress--success grow" style="max-width: 320px"><div class="progress__bar" id="coverage-bar"></div></div>
+          <span class="small muted" id="coverage-label"></span>
+        </div>
+      </div>
+      <button class="btn" id="ai-fill">Completa le risposte mancanti</button>
+    </div>
+    <div class="job" id="job" hidden></div>
+  </section>
+</section>
+{% endblock %}
